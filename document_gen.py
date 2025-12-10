@@ -148,7 +148,12 @@ def generate_pdf(md_content: str, output_path: str, doc_type: str = 'resume') ->
 
         # Get the directory where this script is located (for node_modules)
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        md_to_pdf_path = os.path.join(script_dir, 'node_modules', '.bin', 'md-to-pdf.cmd')
+
+        # Use platform-appropriate md-to-pdf binary
+        if os.name == 'nt':
+            md_to_pdf_path = os.path.join(script_dir, 'node_modules', '.bin', 'md-to-pdf.cmd')
+        else:
+            md_to_pdf_path = os.path.join(script_dir, 'node_modules', '.bin', 'md-to-pdf')
 
         log.debug(f"Running md-to-pdf: {md_to_pdf_path}")
         # Run md-to-pdf

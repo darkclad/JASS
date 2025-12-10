@@ -36,7 +36,7 @@
     </div>
     <div>
         <button type="submit" form="addJobForm" class="btn btn-success me-2" id="submitBtnTop">
-            <span class="btn-text"><i class="bi bi-plus-circle"></i> Add Job</span>
+            <span class="btn-text"><i class="bi bi-check-lg"></i> Save</span>
             <span class="spinner-border" role="status"></span>
         </button>
         <a href="{{ url_for('jobs') }}" class="btn btn-outline-secondary">Cancel</a>
@@ -115,9 +115,13 @@
                                     <span id="parsedRemote">-</span>
                                 </div>
                                 <div class="col-md-4">
-                                    <small class="text-muted">Posted:</small>
+                                    <small class="text-muted">Job Age:</small>
                                     <span id="parsedPosted">-</span>
                                 </div>
+                            </div>
+                            <div class="mt-2" id="parsedHiringManagerRow" style="display: none;">
+                                <small class="text-muted">Hiring Manager:</small>
+                                <span id="parsedHiringManager"></span>
                             </div>
                             <div class="mt-2" id="parsedSkillsRow" style="display: none;">
                                 <small class="text-muted">Skills:</small>
@@ -222,6 +226,14 @@ async function parseDescription() {
             document.getElementById('parsedSkillsRow').style.display = 'block';
         } else {
             document.getElementById('parsedSkillsRow').style.display = 'none';
+        }
+
+        // Display hiring manager if detected
+        if (parsed.hiring_manager) {
+            document.getElementById('parsedHiringManager').textContent = parsed.hiring_manager;
+            document.getElementById('parsedHiringManagerRow').style.display = 'block';
+        } else {
+            document.getElementById('parsedHiringManagerRow').style.display = 'none';
         }
 
         document.getElementById('parsedInfo').classList.add('show');

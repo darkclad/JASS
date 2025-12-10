@@ -13,11 +13,12 @@ from logger import setup_logging, get_logger
 # Parse verbosity from command line (-d, -dd, -ddd, etc.)
 verbosity = 0
 for arg in sys.argv[1:]:
-    if arg.startswith('-d'):
-        verbosity = len(arg) - 1  # Count 'd's after the dash
+    if arg.startswith('-d') and arg.replace('d', '').replace('-', '') == '':
+        verbosity = arg.count('d')
 
 # Initialize logging with verbosity level
 setup_logging(verbosity)
+print(f"JASS starting with verbosity={verbosity} (args: {sys.argv[1:]})", file=sys.stderr)
 
 # Get logger for this module
 log = get_logger('app')
@@ -235,7 +236,8 @@ def parse_job():
         'extracted_location': parsed.get('extracted_location'),
         'cleaned_description': parsed.get('cleaned_description'),
         'posted_at': posted_at_str,
-        'source_format': parsed.get('source_format')
+        'source_format': parsed.get('source_format'),
+        'hiring_manager': parsed.get('hiring_manager')
     })
 
 
@@ -516,118 +518,122 @@ def tailor_job_stream(id):
     from document_gen import save_application_documents, extract_applicant_info, get_application_folder_name
 
     def generate():
-        job = Job.query.get(id)
-        if not job:
-            yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
-            return
+        # SSE generators run outside request context, so we need app context
+        with app.app_context():
+            job = Job.query.get(id)
+            if not job:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                return
 
-        log.info(f"Tailoring job {id}: {job.title} at {job.company}")
+            log.info(f"Tailoring job {id}: {job.title} at {job.company}")
 
-        # Get master resume
-        master_resume = MasterResume.query.filter_by(is_default=True).first()
-        if not master_resume:
-            master_resume = MasterResume.query.first()
+            # Get master resume
+            master_resume = MasterResume.query.filter_by(is_default=True).first()
+            if not master_resume:
+                master_resume = MasterResume.query.first()
 
-        if not master_resume:
-            yield f"data: {json.dumps({'error': 'No master resume found'})}\n\n"
-            return
+            if not master_resume:
+                yield f"data: {json.dumps({'error': 'No master resume found'})}\n\n"
+                return
 
-        # Get AI config
-        ai_config = AIConfig.query.filter_by(is_active=True).first()
-        if not ai_config:
-            yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
-            return
+            # Get AI config
+            ai_config = AIConfig.query.filter_by(is_active=True).first()
+            if not ai_config:
+                yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
+                return
 
-        if ai_config.provider != 'claude-cli' and not ai_config.api_key:
-            yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
-            return
+            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+                yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+                return
 
-        try:
-            yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
+            try:
+                yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
 
-            # Get custom prompts
-            resume_prompt = AppSettings.get('resume_prompt')
-            cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+                # Get custom prompts
+                resume_prompt = AppSettings.get('resume_prompt')
+                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
 
-            ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
-                                 resume_prompt, cover_letter_prompt)
+                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                     resume_prompt, cover_letter_prompt)
 
-            # Get plain text description
-            from bs4 import BeautifulSoup
-            desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
+                # Get plain text description
+                from bs4 import BeautifulSoup
+                desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
 
-            # Prepare application directory
-            folder_name = get_application_folder_name(job.company, job.id)
-            app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+                # Prepare application directory
+                folder_name = get_application_folder_name(job.company, job.id)
+                app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
 
-            # Generate tailored resume
-            yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
-            if ai_config.provider == 'claude-cli':
-                tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
-            else:
-                tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
+                # Generate tailored resume
+                yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
+                if ai_config.provider == 'claude-cli':
+                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
+                else:
+                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
 
-            # Generate cover letter
-            yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
-            if ai_config.provider == 'claude-cli':
-                cover_letter = ai.generate_cover_letter(
-                    tailored_resume, desc_text, job.company, job.title, app_dir,
-                    job.hiring_manager
+                # Generate cover letter
+                yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
+                if ai_config.provider == 'claude-cli':
+                    cover_letter = ai.generate_cover_letter(
+                        tailored_resume, desc_text, job.company, job.title, app_dir,
+                        job.hiring_manager
+                    )
+                else:
+                    cover_letter = ai.generate_cover_letter(
+                        tailored_resume, desc_text, job.company, job.title,
+                        job.hiring_manager
+                    )
+
+                # Save documents
+                yield f"data: {json.dumps({'status': 'Generating PDFs...'})}\n\n"
+                applicant_info = extract_applicant_info(master_resume.content)
+                jass_dir = os.path.dirname(os.path.abspath(__file__))
+
+                # Delete old application folder if exists
+                application = job.application
+                if application and application.resume_md:
+                    old_dir = os.path.dirname(application.resume_md)
+                    if os.path.exists(old_dir):
+                        import shutil
+                        shutil.rmtree(old_dir)
+
+                paths = save_application_documents(
+                    job.id, tailored_resume, cover_letter, Config.APPLICATIONS_DIR,
+                    company=job.company,
+                    first_name=applicant_info.get('first_name'),
+                    last_name=applicant_info.get('last_name'),
+                    script_dir=jass_dir
                 )
-            else:
-                cover_letter = ai.generate_cover_letter(
-                    tailored_resume, desc_text, job.company, job.title,
-                    job.hiring_manager
-                )
 
-            # Save documents
-            yield f"data: {json.dumps({'status': 'Generating PDFs...'})}\n\n"
-            applicant_info = extract_applicant_info(master_resume.content)
-            jass_dir = os.path.dirname(os.path.abspath(__file__))
+                # Create or update application
+                if not application:
+                    application = Application(job_id=job.id)
+                    db.session.add(application)
 
-            # Delete old application folder if exists
-            application = job.application
-            if application and application.resume_md:
-                old_dir = os.path.dirname(application.resume_md)
-                if os.path.exists(old_dir):
-                    import shutil
-                    shutil.rmtree(old_dir)
+                application.resume_md = paths.get('resume_md')
+                application.resume_pdf = paths.get('resume_pdf')
+                application.cover_letter_md = paths.get('cover_letter_md')
+                application.cover_letter_pdf = paths.get('cover_letter_pdf')
+                application.ai_provider = ai_config.provider
+                application.ai_model = ai_config.model_name
+                application.tailored_at = datetime.utcnow()
+                application.status = 'ready'
+                application.first_name = applicant_info.get('first_name', '')
+                application.last_name = applicant_info.get('last_name', '')
+                application.email = applicant_info.get('email', '')
+                application.phone = applicant_info.get('phone', '')
 
-            paths = save_application_documents(
-                job.id, tailored_resume, cover_letter, Config.APPLICATIONS_DIR,
-                company=job.company,
-                first_name=applicant_info.get('first_name'),
-                last_name=applicant_info.get('last_name'),
-                script_dir=jass_dir
-            )
+                job.status = 'ready'
+                db.session.commit()
 
-            # Create or update application
-            if not application:
-                application = Application(job_id=job.id)
-                db.session.add(application)
+                log.info(f"Documents saved successfully for application {application.id}")
+                # Can't use url_for() outside request context, so build URL manually
+                redirect_url = f"/applications/{application.id}"
+                yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
 
-            application.resume_md = paths.get('resume_md')
-            application.resume_pdf = paths.get('resume_pdf')
-            application.cover_letter_md = paths.get('cover_letter_md')
-            application.cover_letter_pdf = paths.get('cover_letter_pdf')
-            application.ai_provider = ai_config.provider
-            application.ai_model = ai_config.model_name
-            application.tailored_at = datetime.utcnow()
-            application.status = 'ready'
-            application.first_name = applicant_info.get('first_name', '')
-            application.last_name = applicant_info.get('last_name', '')
-            application.email = applicant_info.get('email', '')
-            application.phone = applicant_info.get('phone', '')
-
-            job.status = 'ready'
-            db.session.commit()
-
-            log.info(f"Documents saved successfully for application {application.id}")
-            yield f"data: {json.dumps({'status': 'Complete!', 'redirect': url_for('application_detail', id=application.id)})}\n\n"
-
-        except Exception as e:
-            log.error(f"Error generating documents: {e}", exc_info=True)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            except Exception as e:
+                log.error(f"Error generating documents: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return Response(generate(), mimetype='text/event-stream')
 
@@ -688,28 +694,53 @@ def update_application(id):
     """Update application documents (resume and cover letter)."""
     from document_gen import generate_pdf
 
+    log.info(f"Updating application {id}")
     application = Application.query.get_or_404(id)
+    log.debug(f"Application paths - resume_md: {application.resume_md}, resume_pdf: {application.resume_pdf}")
+    log.debug(f"Application paths - cover_letter_md: {application.cover_letter_md}, cover_letter_pdf: {application.cover_letter_pdf}")
 
     resume_md = request.form.get('resume_md', '')
     cover_letter_md = request.form.get('cover_letter_md', '')
+    log.debug(f"Resume MD length: {len(resume_md)}, Cover letter MD length: {len(cover_letter_md)}")
 
     # Save updated markdown
     if resume_md and application.resume_md:
+        log.debug(f"Saving resume to {application.resume_md}")
         with open(application.resume_md, 'w', encoding='utf-8') as f:
             f.write(resume_md)
-        # Regenerate PDF
+        # Regenerate PDF (or generate if missing)
         if application.resume_pdf:
+            log.debug(f"Regenerating resume PDF: {application.resume_pdf}")
             generate_pdf(resume_md, application.resume_pdf, 'resume')
+            log.debug("Resume PDF generated")
+        else:
+            # PDF path missing - generate it
+            pdf_path = application.resume_md.replace('.md', '.pdf')
+            log.debug(f"Generating missing resume PDF: {pdf_path}")
+            generate_pdf(resume_md, pdf_path, 'resume')
+            application.resume_pdf = pdf_path
+            log.debug("Resume PDF generated and path saved")
 
     if cover_letter_md and application.cover_letter_md:
+        log.debug(f"Saving cover letter to {application.cover_letter_md}")
         with open(application.cover_letter_md, 'w', encoding='utf-8') as f:
             f.write(cover_letter_md)
-        # Regenerate PDF
+        # Regenerate PDF (or generate if missing)
         if application.cover_letter_pdf:
+            log.debug(f"Regenerating cover letter PDF: {application.cover_letter_pdf}")
             generate_pdf(cover_letter_md, application.cover_letter_pdf, 'cover_letter')
+            log.debug("Cover letter PDF generated")
+        else:
+            # PDF path missing - generate it
+            pdf_path = application.cover_letter_md.replace('.md', '.pdf')
+            log.debug(f"Generating missing cover letter PDF: {pdf_path}")
+            generate_pdf(cover_letter_md, pdf_path, 'cover_letter')
+            application.cover_letter_pdf = pdf_path
+            log.debug("Cover letter PDF generated and path saved")
 
     application.status = 'ready'
     db.session.commit()
+    log.info(f"Application {id} updated successfully")
 
     flash('Documents updated', 'success')
     return redirect(url_for('application_detail', id=id))

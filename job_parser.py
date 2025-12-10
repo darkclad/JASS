@@ -251,10 +251,18 @@ def parse_linkedin_header(text: str) -> Dict:
         result['is_remote'] = True
 
     # Extract hiring manager from "Meet the hiring team" section
-    hiring_match = re.search(r'Meet the hiring team\s*\n+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text)
+    # LinkedIn format: "Meet the hiring team\nName Name \nName Name \n3rd\nTitle @ Company"
+    # Match just the first line after "Meet the hiring team" (name on single line)
+    # Use [ ]+ for spaces only (not newlines) between name parts
+    hiring_match = re.search(r'Meet the hiring team\s*\n+([A-Z][a-zA-Z]+(?:[ ]+[A-Z][a-zA-Z]+)*)', text)
     if hiring_match:
-        result['hiring_manager'] = hiring_match.group(1).strip()
-        log.debug(f"Extracted hiring manager: {result['hiring_manager']}")
+        # Clean the name - remove trailing special chars, emojis, whitespace
+        name = hiring_match.group(1).strip()
+        # Remove any trailing non-letter characters
+        name = re.sub(r'[^a-zA-Z\s]+$', '', name).strip()
+        if name:
+            result['hiring_manager'] = name
+            log.debug(f"Extracted hiring manager: {result['hiring_manager']}")
 
     return result
 

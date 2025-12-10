@@ -250,8 +250,20 @@ document.getElementById('tailorBtn')?.addEventListener('click', function() {
     document.body.classList.add('loading');
     btnText.style.display = 'none';
     btnStatus.style.display = 'inline';
-    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> Starting...';
     spinner.style.display = 'inline-block';
+
+    // Start timer (resets on each stage)
+    let stageStartTime = Date.now();
+    let currentStatus = 'Starting...';
+    let timerInterval;
+
+    function updateStatus() {
+        const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
+        btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+    }
+
+    updateStatus();
+    timerInterval = setInterval(updateStatus, 1000);
 
     // Connect to SSE endpoint
     const eventSource = new EventSource(url);
@@ -260,6 +272,7 @@ document.getElementById('tailorBtn')?.addEventListener('click', function() {
         const data = JSON.parse(event.data);
 
         if (data.error) {
+            clearInterval(timerInterval);
             eventSource.close();
             alert('Error: ' + data.error);
             // Reset button
@@ -273,16 +286,20 @@ document.getElementById('tailorBtn')?.addEventListener('click', function() {
         }
 
         if (data.status) {
-            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + data.status;
+            currentStatus = data.status;
+            stageStartTime = Date.now();  // Reset timer for new stage
+            updateStatus();
         }
 
         if (data.redirect) {
+            clearInterval(timerInterval);
             eventSource.close();
             window.location.href = data.redirect;
         }
     };
 
     eventSource.onerror = function() {
+        clearInterval(timerInterval);
         eventSource.close();
         alert('Connection lost. Please try again.');
         // Reset button
