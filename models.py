@@ -121,3 +121,39 @@ class SearchHistory(db.Model):
 
     def __repr__(self):
         return f'<Search "{self.keywords}">'
+
+
+class AppSettings(db.Model):
+    """Application-wide settings."""
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(100), unique=True, nullable=False)
+    value = db.Column(db.Text)  # JSON for complex values
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<AppSettings {self.key}>'
+
+    @staticmethod
+    def get(key, default=None):
+        """Get a setting value."""
+        setting = AppSettings.query.filter_by(key=key).first()
+        if setting:
+            import json
+            try:
+                return json.loads(setting.value)
+            except (json.JSONDecodeError, TypeError):
+                return setting.value
+        return default
+
+    @staticmethod
+    def set(key, value):
+        """Set a setting value."""
+        import json
+        setting = AppSettings.query.filter_by(key=key).first()
+        if setting:
+            setting.value = json.dumps(value) if not isinstance(value, str) else value
+        else:
+            setting = AppSettings(key=key, value=json.dumps(value) if not isinstance(value, str) else value)
+            db.session.add(setting)
+        db.session.commit()
+        return setting

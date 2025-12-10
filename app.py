@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 import markdown
 
 from config import Config
-from models import db, MasterResume, Job, Application, AIConfig, SearchHistory
+from models import db, MasterResume, Job, Application, AIConfig, SearchHistory, AppSettings
 from logger import get_logger
 
 # Get logger for this module
@@ -676,9 +676,22 @@ def delete_resume(id):
 @app.route('/settings')
 def settings():
     """AI provider settings."""
+    from config import Config
     configs = AIConfig.query.all()
     active_config = AIConfig.query.filter_by(is_active=True).first()
-    return render_template('settings.html', configs=configs, active_config=active_config)
+
+    # Get custom boards or use defaults
+    custom_boards = AppSettings.get('greenhouse_boards')
+    if custom_boards:
+        boards = custom_boards
+    else:
+        boards = Config.DEFAULT_BOARDS
+
+    return render_template('settings.html',
+                           configs=configs,
+                           active_config=active_config,
+                           boards=boards,
+                           default_boards=Config.DEFAULT_BOARDS)
 
 
 @app.route('/settings/save', methods=['POST'])
@@ -744,6 +757,46 @@ def test_settings():
             return jsonify({'success': True, 'message': f'Connected to {config.model_name}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/settings/boards', methods=['POST'])
+def save_boards():
+    """Save greenhouse boards."""
+    boards_text = request.form.get('boards', '').strip()
+
+    # Parse and validate boards
+    if not boards_text:
+        flash('Boards list cannot be empty', 'danger')
+        return redirect(url_for('settings'))
+
+    # Split by newlines or commas, clean up
+    boards = []
+    for line in boards_text.replace(',', '\n').split('\n'):
+        board = line.strip().lower()
+        if board:
+            boards.append(board)
+
+    if not boards:
+        flash('Boards list cannot be empty', 'danger')
+        return redirect(url_for('settings'))
+
+    # Save to database
+    AppSettings.set('greenhouse_boards', boards)
+    flash(f'Saved {len(boards)} boards', 'success')
+    return redirect(url_for('settings'))
+
+
+@app.route('/settings/boards/restore', methods=['POST'])
+def restore_default_boards():
+    """Restore default greenhouse boards."""
+    # Delete custom boards setting
+    setting = AppSettings.query.filter_by(key='greenhouse_boards').first()
+    if setting:
+        db.session.delete(setting)
+        db.session.commit()
+
+    flash('Restored default boards', 'success')
+    return redirect(url_for('settings'))
 
 
 # ============ Run ============

@@ -99,14 +99,7 @@
 <div class="text-center text-muted py-5">
     <i class="bi bi-inbox" style="font-size: 4rem;"></i>
     <p class="mt-3">No saved jobs yet</p>
-    <div class="d-flex justify-content-center gap-2">
-        <a href="{{ url_for('add_job') }}" class="btn btn-success">
-            <i class="bi bi-plus-circle"></i> Add Job Manually
-        </a>
-        <a href="{{ url_for('search') }}" class="btn btn-primary">
-            <i class="bi bi-search"></i> Search Greenhouse
-        </a>
-    </div>
+    <p>Use the buttons above to add jobs manually or search Greenhouse</p>
 </div>
 {% endif %}
 {% endblock %}

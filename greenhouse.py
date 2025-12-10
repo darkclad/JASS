@@ -239,10 +239,17 @@ def search_greenhouse(keywords: str, boards: List[str] = None,
         List of matching jobs
     """
     from config import Config
+    from models import AppSettings
 
     client = GreenhouseClient()
     keyword_list = [kw.strip() for kw in keywords.split() if kw.strip()]
-    board_list = boards or Config.DEFAULT_BOARDS
+
+    # Use custom boards from settings, or caller-provided boards, or defaults
+    if boards:
+        board_list = boards
+    else:
+        custom_boards = AppSettings.get('greenhouse_boards')
+        board_list = custom_boards if custom_boards else Config.DEFAULT_BOARDS
 
     return client.search_jobs(keyword_list, board_list, location)
 

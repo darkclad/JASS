@@ -122,19 +122,38 @@
 
         <!-- Greenhouse Boards -->
         <div class="card">
-            <div class="card-header">
-                <i class="bi bi-building"></i> Default Company Boards
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-building"></i> Default Company Boards</span>
+                {% if boards != default_boards %}
+                <span class="badge bg-info">Custom</span>
+                {% endif %}
             </div>
             <div class="card-body">
                 <p class="small text-muted">
-                    These Greenhouse boards are searched by default. You can override them in the search form.
+                    These Greenhouse boards are searched by default. One board per line.
                 </p>
-                <div class="small">
-                    {% for board in ['sentinellabs', 'paloaltonetworks', 'zscaler', 'cloudflare', 'crowdstrike', 'tanium', 'rapid7', 'snyk', 'unity3d', 'roblox', 'rivian'] %}
-                    <span class="badge bg-light text-dark me-1 mb-1">{{ board }}</span>
-                    {% endfor %}
-                </div>
-                <p class="small text-muted mt-3 mb-0">
+                <form action="{{ url_for('save_boards') }}" method="POST">
+                    <div class="mb-3">
+                        <textarea name="boards" class="form-control font-monospace" rows="8"
+                                  style="font-size: 0.85rem;" required>{% for board in boards %}{{ board }}{% if not loop.last %}
+{% endif %}{% endfor %}</textarea>
+                        <div class="form-text">Enter one board name per line (e.g., sentinellabs, cloudflare)</div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary btn-sm">
+                            <i class="bi bi-save"></i> Save Boards
+                        </button>
+                        {% if boards != default_boards %}
+                        <button type="button" class="btn btn-outline-secondary btn-sm"
+                                onclick="if(confirm('Restore default boards?')) document.getElementById('restoreForm').submit()">
+                            <i class="bi bi-arrow-counterclockwise"></i> Restore Defaults
+                        </button>
+                        {% endif %}
+                    </div>
+                </form>
+                <form id="restoreForm" action="{{ url_for('restore_default_boards') }}" method="POST" style="display: none;"></form>
+                <hr>
+                <p class="small text-muted mb-0">
                     To find more boards, check company career pages for Greenhouse URLs like
                     <code>boards.greenhouse.io/BOARD_NAME</code>
                 </p>
