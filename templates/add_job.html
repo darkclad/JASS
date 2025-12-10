@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block title %}Add Job - JASS{% endblock %}
+
+{% block extra_css %}
+<style>
+    .job-description {
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 0.875rem;
+        min-height: 50vh;
+        height: calc(100vh - 550px);
+        resize: vertical;
+    }
+    .parsed-info {
+        display: none;
+    }
+    .parsed-info.show {
+        display: block;
+    }
+    .extracted-hint a {
+        text-decoration: underline;
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('jobs') }}">Jobs</a></li>
+            <li class="breadcrumb-item active">Add Job</li>
+        </ol>
+    </nav>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-plus-circle"></i> Add Job Manually
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('add_job') }}" method="POST" id="addJobForm">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Job Title <span class="text-danger">*</span></label>
+                            <input type="text" name="title" id="titleInput" class="form-control" required
+                                   placeholder="e.g., Senior Software Engineer">
+                            <small class="text-muted extracted-hint" id="titleHint" style="display: none;"></small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Company <span class="text-danger">*</span></label>
+                            <input type="text" name="company" id="companyInput" class="form-control" required
+                                   placeholder="e.g., Acme Corp">
+                            <small class="text-muted extracted-hint" id="companyHint" style="display: none;"></small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Location</label>
+                            <input type="text" name="location" class="form-control"
+                                   placeholder="e.g., San Diego, CA or Remote">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Source</label>
+                            <select name="source" class="form-select">
+                                <option value="linkedin">LinkedIn</option>
+                                <option value="indeed">Indeed</option>
+                                <option value="glassdoor">Glassdoor</option>
+                                <option value="company_site">Company Website</option>
+                                <option value="referral">Referral</option>
+                                <option value="manual" selected>Other</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Job URL (optional)</label>
+                        <input type="url" name="url" class="form-control"
+                               placeholder="https://...">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Job Description</label>
+                        <textarea name="description" class="form-control job-description" id="jobDescription"
+                                  placeholder="Paste the job description here..."></textarea>
+                        <div class="form-text">
+                            Paste the full job description. Salary, experience requirements, and skills will be automatically extracted.
+                        </div>
+                    </div>
+
+                    <!-- Parsed Info Preview -->
+                    <div class="parsed-info mb-3" id="parsedInfo">
+                        <div class="alert alert-info">
+                            <strong><i class="bi bi-magic"></i> Auto-detected:</strong>
+                            <div class="row mt-2">
+                                <div class="col-md-4">
+                                    <small class="text-muted">Salary:</small>
+                                    <span id="parsedSalary">-</span>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">Remote:</small>
+                                    <span id="parsedRemote">-</span>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">Experience:</small>
+                                    <span id="parsedExperience">-</span>
+                                </div>
+                            </div>
+                            <div class="mt-2" id="parsedSkillsRow" style="display: none;">
+                                <small class="text-muted">Skills:</small>
+                                <span id="parsedSkills"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary" id="submitBtn">
+                            <span class="btn-text"><i class="bi bi-plus"></i> Add Job</span>
+                            <span class="spinner-border" role="status"></span>
+                        </button>
+                        <a href="{{ url_for('jobs') }}" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-info-circle"></i> Tips
+            </div>
+            <div class="card-body">
+                <p class="small mb-2">
+                    <strong>Paste the job description first!</strong> The system will automatically extract:
+                </p>
+                <ul class="small mb-0">
+                    <li><strong>Job title</strong> and <strong>company name</strong></li>
+                    <li>Salary range</li>
+                    <li>Remote/hybrid status</li>
+                    <li>Years of experience required</li>
+                    <li>Technical skills mentioned</li>
+                </ul>
+                <hr>
+                <p class="small mb-0">
+                    <strong>Sources:</strong> Select where you found the job to track which platforms are most effective.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let parseTimeout;
+
+document.getElementById('jobDescription')?.addEventListener('input', function() {
+    clearTimeout(parseTimeout);
+    parseTimeout = setTimeout(parseDescription, 500);
+});
+
+async function parseDescription() {
+    const text = document.getElementById('jobDescription').value;
+    const title = document.getElementById('titleInput').value;
+    const location = document.querySelector('[name="location"]').value;
+
+    if (!text || text.length < 50) {
+        document.getElementById('parsedInfo').classList.remove('show');
+        document.getElementById('titleHint').style.display = 'none';
+        document.getElementById('companyHint').style.display = 'none';
+        return;
+    }
+
+    try {
+        const response = await fetch('/jobs/parse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: text, title: title, location: location })
+        });
+        const parsed = await response.json();
+
+        // Update parsed info preview
+        document.getElementById('parsedSalary').textContent = parsed.salary_text || '-';
+        document.getElementById('parsedRemote').textContent = parsed.is_remote !== null ?
+            (parsed.is_remote ? 'Yes' : 'No') : '-';
+        document.getElementById('parsedExperience').textContent = parsed.experience_years || '-';
+
+        if (parsed.skills && parsed.skills.length > 0) {
+            document.getElementById('parsedSkills').textContent = parsed.skills.join(', ');
+            document.getElementById('parsedSkillsRow').style.display = 'block';
+        } else {
+            document.getElementById('parsedSkillsRow').style.display = 'none';
+        }
+
+        document.getElementById('parsedInfo').classList.add('show');
+
+        // Auto-fill title if empty and extracted
+        const titleInput = document.getElementById('titleInput');
+        const titleHint = document.getElementById('titleHint');
+        if (parsed.extracted_title) {
+            if (!titleInput.value) {
+                titleInput.value = parsed.extracted_title;
+                titleHint.style.display = 'none';
+            } else if (titleInput.value !== parsed.extracted_title) {
+                titleHint.innerHTML = `Detected: <a href="#" onclick="document.getElementById('titleInput').value='${parsed.extracted_title.replace(/'/g, "\\'")}'; this.parentElement.style.display='none'; return false;">${parsed.extracted_title}</a>`;
+                titleHint.style.display = 'block';
+            }
+        } else {
+            titleHint.style.display = 'none';
+        }
+
+        // Auto-fill company if empty and extracted
+        const companyInput = document.getElementById('companyInput');
+        const companyHint = document.getElementById('companyHint');
+        if (parsed.extracted_company) {
+            if (!companyInput.value) {
+                companyInput.value = parsed.extracted_company;
+                companyHint.style.display = 'none';
+            } else if (companyInput.value !== parsed.extracted_company) {
+                companyHint.innerHTML = `Detected: <a href="#" onclick="document.getElementById('companyInput').value='${parsed.extracted_company.replace(/'/g, "\\'")}'; this.parentElement.style.display='none'; return false;">${parsed.extracted_company}</a>`;
+                companyHint.style.display = 'block';
+            }
+        } else {
+            companyHint.style.display = 'none';
+        }
+
+    } catch (err) {
+        console.error('Parse error:', err);
+    }
+}
+
+document.getElementById('addJobForm')?.addEventListener('submit', function() {
+    setLoading(document.getElementById('submitBtn'), true);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Saved Jobs - JASS{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1><i class="bi bi-collection"></i> Saved Jobs</h1>
+    <div>
+        <a href="{{ url_for('add_job') }}" class="btn btn-success me-2">
+            <i class="bi bi-plus-circle"></i> Add Job
+        </a>
+        <a href="{{ url_for('search') }}" class="btn btn-primary">
+            <i class="bi bi-search"></i> Search Greenhouse
+        </a>
+    </div>
+</div>
+
+<!-- Filter Tabs -->
+<ul class="nav nav-pills mb-4">
+    <li class="nav-item">
+        <a class="nav-link {% if not status_filter %}active{% endif %}" href="{{ url_for('jobs') }}">All</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {% if status_filter == 'saved' %}active{% endif %}" href="{{ url_for('jobs') }}?status=saved">Saved</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {% if status_filter == 'ready' %}active{% endif %}" href="{{ url_for('jobs') }}?status=ready">Ready</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {% if status_filter == 'applied' %}active{% endif %}" href="{{ url_for('jobs') }}?status=applied">Applied</a>
+    </li>
+</ul>
+
+{% if jobs %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Company</th>
+                    <th>Location</th>
+                    <th>Info</th>
+                    <th>Status</th>
+                    <th>Saved</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('job_detail', id=job.id) }}" class="text-decoration-none fw-bold">
+                            {{ job.title }}
+                        </a>
+                        {% if job.source and job.source != 'greenhouse' %}
+                        <span class="badge bg-light text-muted" style="font-size: 0.65rem;">{{ job.source }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ job.company }}</td>
+                    <td>{{ job.location }}</td>
+                    <td>
+                        {% if job.salary_text %}
+                        <span class="badge bg-success" style="font-size: 0.7rem;" title="{{ job.salary_text }}">
+                            <i class="bi bi-currency-dollar"></i>
+                        </span>
+                        {% endif %}
+                        {% if job.is_remote %}
+                        <span class="badge bg-info" style="font-size: 0.7rem;" title="Remote">
+                            <i class="bi bi-house-door"></i>
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td><span class="badge status-{{ job.status }}">{{ job.status }}</span></td>
+                    <td>{{ job.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td>
+                        <a href="{{ url_for('job_detail', id=job.id) }}" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-eye"></i>
+                        </a>
+                        {% if job.url %}
+                        <a href="{{ job.url }}" target="_blank" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                        <form action="{{ url_for('delete_job', id=job.id) }}" method="POST" class="d-inline"
+                              onsubmit="return confirm('Delete this job?')">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="text-center text-muted py-5">
+    <i class="bi bi-inbox" style="font-size: 4rem;"></i>
+    <p class="mt-3">No saved jobs yet</p>
+    <div class="d-flex justify-content-center gap-2">
+        <a href="{{ url_for('add_job') }}" class="btn btn-success">
+            <i class="bi bi-plus-circle"></i> Add Job Manually
+        </a>
+        <a href="{{ url_for('search') }}" class="btn btn-primary">
+            <i class="bi bi-search"></i> Search Greenhouse
+        </a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

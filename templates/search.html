@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+
+{% block title %}Search Jobs - JASS{% endblock %}
+
+{% block extra_css %}
+<style>
+    .job-card {
+        transition: all 0.2s;
+        cursor: pointer;
+    }
+    .job-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .job-card.saved {
+        border-left: 4px solid #28a745;
+    }
+    #resultsContainer {
+        max-height: 70vh;
+        overflow-y: auto;
+    }
+    .filter-bar {
+        background: #fff;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 class="mb-4"><i class="bi bi-search"></i> Search Jobs</h1>
+
+<!-- Search Form -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form action="{{ url_for('search_jobs') }}" method="POST" id="searchForm">
+            <div class="row g-3">
+                <div class="col-md-5">
+                    <label class="form-label">Keywords</label>
+                    <input type="text" name="keywords" class="form-control"
+                           placeholder="C++ Senior Remote..." value="{{ keywords|default('') }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Location Filter</label>
+                    <input type="text" name="location" class="form-control"
+                           placeholder="Remote, San Diego..." value="{{ location|default('') }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Boards (comma-separated)</label>
+                    <input type="text" name="boards" class="form-control" id="boardsInput"
+                           placeholder="Leave empty for defaults" value="{{ boards|default('') }}">
+                </div>
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" id="searchBtn">
+                        <span class="btn-text"><i class="bi bi-search"></i></span>
+                        <span class="spinner-border" role="status"></span>
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if results is not none %}
+<!-- Filter Bar -->
+<div class="filter-bar mb-3">
+    <div class="row align-items-center">
+        <div class="col-auto">
+            <strong>{{ results|length }} jobs found</strong>
+        </div>
+        <div class="col-auto">
+            <input type="text" id="filterTitle" class="form-control form-control-sm" placeholder="Filter by title...">
+        </div>
+        <div class="col-auto">
+            <input type="text" id="filterCompany" class="form-control form-control-sm" placeholder="Filter by company...">
+        </div>
+        <div class="col-auto">
+            <select id="filterSaved" class="form-select form-select-sm">
+                <option value="">All</option>
+                <option value="new">New only</option>
+                <option value="saved">Saved only</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<!-- Results -->
+<div id="resultsContainer">
+    {% for job in results %}
+    <div class="card job-card mb-2 {% if job.is_saved %}saved{% endif %}"
+         data-title="{{ job.title|lower }}"
+         data-company="{{ job.company|lower }}"
+         data-saved="{{ 'saved' if job.is_saved else 'new' }}"
+         data-days="{{ job.freshness.days if job.freshness.days is not none else 999 }}">
+        <div class="card-body py-3">
+            <div class="row align-items-center">
+                <div class="col">
+                    <h6 class="mb-1">
+                        {{ job.title }}
+                        <span class="badge bg-{{ job.freshness.class }} ms-2" style="font-size: 0.7rem;">
+                            {{ job.freshness.label }}
+                        </span>
+                    </h6>
+                    <small class="text-muted">
+                        {{ job.company }} &bull; {{ job.location }}
+                        {% if job.department %} &bull; {{ job.department }}{% endif %}
+                    </small>
+                </div>
+                <div class="col-auto">
+                    {% if job.is_saved %}
+                    <a href="{{ url_for('job_detail', id=job.saved_id) }}" class="btn btn-sm btn-success">
+                        <i class="bi bi-check"></i> Saved
+                    </a>
+                    {% else %}
+                    <button class="btn btn-sm btn-outline-primary save-job-btn"
+                            data-job='{{ job|tojson }}'>
+                        <i class="bi bi-bookmark"></i> Save
+                    </button>
+                    {% endif %}
+                    <a href="{{ job.url }}" target="_blank" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-box-arrow-up-right"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-emoji-frown" style="font-size: 3rem;"></i>
+        <p class="mt-3">No jobs found matching your keywords</p>
+    </div>
+    {% endfor %}
+</div>
+
+{% else %}
+<!-- No search yet -->
+<div class="text-center text-muted py-5">
+    <i class="bi bi-search" style="font-size: 4rem;"></i>
+    <p class="mt-3">Enter keywords to search Greenhouse job boards</p>
+    <p class="small">Default boards: SentinelOne, Palo Alto Networks, Zscaler, Cloudflare, and more</p>
+</div>
+
+{% if recent_searches %}
+<div class="card mt-4">
+    <div class="card-header"><i class="bi bi-clock-history"></i> Recent Searches</div>
+    <div class="card-body">
+        {% for search in recent_searches %}
+        <a href="#" class="badge bg-light text-dark me-2 mb-2 text-decoration-none search-history-link"
+           style="font-size: 0.9rem; cursor: pointer;"
+           data-keywords="{{ search.keywords }}"
+           data-location="{{ search.location or '' }}"
+           data-boards="{{ search.boards or '' }}">
+            {{ search.keywords }}
+            {% if search.location %}<span class="text-info">@ {{ search.location }}</span>{% endif %}
+            <span class="text-muted">({{ search.result_count }})</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Save job button handler
+document.querySelectorAll('.save-job-btn').forEach(btn => {
+    btn.addEventListener('click', async function() {
+        const jobData = JSON.parse(this.dataset.job);
+        this.disabled = true;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        try {
+            const response = await fetch('/search/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(jobData)
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                this.classList.remove('btn-outline-primary');
+                this.classList.add('btn-success');
+                this.innerHTML = '<i class="bi bi-check"></i> Saved';
+                this.closest('.job-card').classList.add('saved');
+                this.closest('.job-card').dataset.saved = 'saved';
+            }
+        } catch (err) {
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+            alert('Error saving job: ' + err.message);
+        }
+    });
+});
+
+// Filtering
+function applyFilters() {
+    const titleFilter = document.getElementById('filterTitle').value.toLowerCase();
+    const companyFilter = document.getElementById('filterCompany').value.toLowerCase();
+    const savedFilter = document.getElementById('filterSaved').value;
+
+    document.querySelectorAll('.job-card').forEach(card => {
+        const title = card.dataset.title;
+        const company = card.dataset.company;
+        const saved = card.dataset.saved;
+
+        let show = true;
+        if (titleFilter && !title.includes(titleFilter)) show = false;
+        if (companyFilter && !company.includes(companyFilter)) show = false;
+        if (savedFilter && saved !== savedFilter) show = false;
+
+        card.style.display = show ? '' : 'none';
+    });
+}
+
+document.getElementById('filterTitle')?.addEventListener('input', applyFilters);
+document.getElementById('filterCompany')?.addEventListener('input', applyFilters);
+document.getElementById('filterSaved')?.addEventListener('change', applyFilters);
+
+// Search form loading state
+document.getElementById('searchForm')?.addEventListener('submit', function() {
+    const btn = document.getElementById('searchBtn');
+    setLoading(btn, true);
+});
+
+// Clickable search history - fill form and submit
+let searchHistoryClicked = false;
+document.querySelectorAll('.search-history-link').forEach(link => {
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+
+        // Prevent multiple clicks
+        if (searchHistoryClicked) return;
+        searchHistoryClicked = true;
+
+        // Show loading state on clicked link
+        const originalText = this.innerHTML;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Searching...';
+        this.style.pointerEvents = 'none';
+
+        // Also show loading on search button
+        const btn = document.getElementById('searchBtn');
+        setLoading(btn, true);
+
+        const form = document.getElementById('searchForm');
+        form.querySelector('[name="keywords"]').value = this.dataset.keywords;
+        form.querySelector('[name="location"]').value = this.dataset.location;
+        // Parse boards from JSON if present
+        let boards = '';
+        if (this.dataset.boards) {
+            try {
+                const boardsArr = JSON.parse(this.dataset.boards);
+                boards = boardsArr.join(', ');
+            } catch(e) {
+                boards = this.dataset.boards;
+            }
+        }
+        document.getElementById('boardsInput').value = boards;
+        form.submit();
+    });
+});
+
+// Click on job card row to save (if not already saved)
+document.querySelectorAll('.job-card').forEach(card => {
+    card.addEventListener('click', function(e) {
+        // Don't trigger if clicking on buttons or links
+        if (e.target.closest('button') || e.target.closest('a')) return;
+
+        // Find the save button if job not already saved
+        const saveBtn = this.querySelector('.save-job-btn');
+        if (saveBtn && !saveBtn.disabled) {
+            saveBtn.click();
+        }
+    });
+});
+</script>
+{% endblock %}

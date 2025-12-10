@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Applications - JASS{% endblock %}
+
+{% block content %}
+<h1 class="mb-4"><i class="bi bi-file-earmark-text"></i> Applications</h1>
+
+{% if applications %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Job</th>
+                    <th>Company</th>
+                    <th>Status</th>
+                    <th>Tailored</th>
+                    <th>Documents</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for app in applications %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('application_detail', id=app.id) }}" class="text-decoration-none fw-bold">
+                            {{ app.job.title }}
+                        </a>
+                    </td>
+                    <td>{{ app.job.company }}</td>
+                    <td><span class="badge status-{{ app.status }}">{{ app.status }}</span></td>
+                    <td>{{ app.tailored_at.strftime('%Y-%m-%d %H:%M') if app.tailored_at else '-' }}</td>
+                    <td>
+                        {% if app.resume_pdf %}
+                        <a href="{{ url_for('download_document', id=app.id, doc_type='resume_pdf') }}"
+                           class="btn btn-sm btn-outline-secondary" title="Download Resume">
+                            <i class="bi bi-file-pdf"></i>
+                        </a>
+                        {% endif %}
+                        {% if app.cover_letter_pdf %}
+                        <a href="{{ url_for('download_document', id=app.id, doc_type='cover_letter_pdf') }}"
+                           class="btn btn-sm btn-outline-secondary" title="Download Cover Letter">
+                            <i class="bi bi-file-pdf"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="{{ url_for('application_detail', id=app.id) }}" class="btn btn-sm btn-primary">
+                            <i class="bi bi-eye"></i> View
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="text-center text-muted py-5">
+    <i class="bi bi-file-earmark-x" style="font-size: 4rem;"></i>
+    <p class="mt-3">No applications yet</p>
+    <p>Save a job and use AI to generate tailored documents</p>
+    <a href="{{ url_for('search') }}" class="btn btn-primary">Search for Jobs</a>
+</div>
+{% endif %}
+{% endblock %}
