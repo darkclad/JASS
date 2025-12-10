@@ -178,12 +178,15 @@ def save_job_from_search():
 
 @app.route('/jobs')
 def jobs():
-    """List all saved jobs."""
+    """List all saved jobs (excludes applied jobs)."""
     status_filter = request.args.get('status', '')
 
     query = Job.query
     if status_filter:
         query = query.filter_by(status=status_filter)
+    else:
+        # By default, exclude applied jobs - they are shown in Applications
+        query = query.filter(Job.status != 'applied')
 
     all_jobs = query.order_by(Job.created_at.desc()).all()
 
@@ -208,13 +211,21 @@ def parse_job():
 
     parsed = parse_job_description(description, title, location)
 
+    # Format posted_at as ISO string for JSON
+    posted_at = parsed.get('posted_at')
+    posted_at_str = posted_at.isoformat() if posted_at else None
+
     return jsonify({
         'salary_text': parsed.get('salary_text'),
         'is_remote': parsed.get('is_remote'),
         'experience_years': parsed.get('experience_years'),
         'skills': parsed.get('skills', []),
         'extracted_title': parsed.get('extracted_title'),
-        'extracted_company': parsed.get('extracted_company')
+        'extracted_company': parsed.get('extracted_company'),
+        'extracted_location': parsed.get('extracted_location'),
+        'cleaned_description': parsed.get('cleaned_description'),
+        'posted_at': posted_at_str,
+        'source_format': parsed.get('source_format')
     })
 
 
@@ -255,7 +266,8 @@ def add_job_post():
         salary_text=parsed.get('salary_text'),
         is_remote=parsed.get('is_remote'),
         experience_years=parsed.get('experience_years'),
-        skills=json.dumps(parsed.get('skills', [])) if parsed.get('skills') else None
+        skills=json.dumps(parsed.get('skills', [])) if parsed.get('skills') else None,
+        posted_at=parsed.get('posted_at')
     )
 
     db.session.add(job)
@@ -280,11 +292,35 @@ def job_detail(id):
     # Get AI config
     ai_config = AIConfig.query.filter_by(is_active=True).first()
 
+    # Calculate job age
+    job_age = None
+    if job.posted_at:
+        delta = datetime.utcnow() - job.posted_at
+        days = delta.days
+        if days == 0:
+            hours = delta.seconds // 3600
+            job_age = f"{hours}h ago" if hours > 0 else "Just now"
+        elif days == 1:
+            job_age = "1 day ago"
+        elif days < 7:
+            job_age = f"{days} days ago"
+        elif days < 14:
+            job_age = "1 week ago"
+        elif days < 30:
+            weeks = days // 7
+            job_age = f"{weeks} weeks ago"
+        elif days < 60:
+            job_age = "1 month ago"
+        else:
+            months = days // 30
+            job_age = f"{months} months ago"
+
     return render_template('job_detail.html',
                            job=job,
                            html_description=html_description,
                            master_resume=master_resume,
-                           ai_config=ai_config)
+                           ai_config=ai_config,
+                           job_age=job_age)
 
 
 @app.route('/jobs/<int:id>/delete', methods=['POST'])
@@ -303,9 +339,27 @@ def mark_applied(id):
     job = Job.query.get_or_404(id)
     job.status = 'applied'
     job.applied_at = datetime.utcnow()
+    # Also update application if exists
+    if job.application:
+        job.application.status = 'applied'
+        job.application.applied_at = datetime.utcnow()
     db.session.commit()
     flash('Job marked as applied', 'success')
     return redirect(url_for('job_detail', id=id))
+
+
+@app.route('/applications/<int:id>/applied', methods=['POST'])
+def mark_application_applied(id):
+    """Mark an application as applied."""
+    application = Application.query.get_or_404(id)
+    application.status = 'applied'
+    application.applied_at = datetime.utcnow()
+    # Also update the job status
+    application.job.status = 'applied'
+    application.job.applied_at = datetime.utcnow()
+    db.session.commit()
+    flash('Application marked as applied', 'success')
+    return redirect(url_for('applications'))
 
 
 @app.route('/jobs/<int:id>/tailor', methods=['POST'])

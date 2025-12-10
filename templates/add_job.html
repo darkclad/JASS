@@ -60,12 +60,13 @@
                     <div class="row mb-3">
                         <div class="col-md-6">
                             <label class="form-label">Location</label>
-                            <input type="text" name="location" class="form-control"
+                            <input type="text" name="location" id="locationInput" class="form-control"
                                    placeholder="e.g., San Diego, CA or Remote">
+                            <small class="text-muted extracted-hint" id="locationHint" style="display: none;"></small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Source</label>
-                            <select name="source" class="form-select">
+                            <select name="source" id="sourceSelect" class="form-select">
                                 <option value="linkedin">LinkedIn</option>
                                 <option value="indeed">Indeed</option>
                                 <option value="glassdoor">Glassdoor</option>
@@ -105,8 +106,8 @@
                                     <span id="parsedRemote">-</span>
                                 </div>
                                 <div class="col-md-4">
-                                    <small class="text-muted">Experience:</small>
-                                    <span id="parsedExperience">-</span>
+                                    <small class="text-muted">Posted:</small>
+                                    <span id="parsedPosted">-</span>
                                 </div>
                             </div>
                             <div class="mt-2" id="parsedSkillsRow" style="display: none;">
@@ -166,12 +167,13 @@ document.getElementById('jobDescription')?.addEventListener('input', function() 
 async function parseDescription() {
     const text = document.getElementById('jobDescription').value;
     const title = document.getElementById('titleInput').value;
-    const location = document.querySelector('[name="location"]').value;
+    const location = document.getElementById('locationInput').value;
 
     if (!text || text.length < 50) {
         document.getElementById('parsedInfo').classList.remove('show');
         document.getElementById('titleHint').style.display = 'none';
         document.getElementById('companyHint').style.display = 'none';
+        document.getElementById('locationHint').style.display = 'none';
         return;
     }
 
@@ -187,7 +189,31 @@ async function parseDescription() {
         document.getElementById('parsedSalary').textContent = parsed.salary_text || '-';
         document.getElementById('parsedRemote').textContent = parsed.is_remote !== null ?
             (parsed.is_remote ? 'Yes' : 'No') : '-';
-        document.getElementById('parsedExperience').textContent = parsed.experience_years || '-';
+
+        // Format posted date
+        if (parsed.posted_at) {
+            const posted = new Date(parsed.posted_at);
+            const now = new Date();
+            const diffMs = now - posted;
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            let postedText;
+            if (diffDays === 0) {
+                postedText = 'Today';
+            } else if (diffDays === 1) {
+                postedText = '1 day ago';
+            } else if (diffDays < 7) {
+                postedText = `${diffDays} days ago`;
+            } else if (diffDays < 14) {
+                postedText = '1 week ago';
+            } else if (diffDays < 30) {
+                postedText = `${Math.floor(diffDays / 7)} weeks ago`;
+            } else {
+                postedText = posted.toLocaleDateString();
+            }
+            document.getElementById('parsedPosted').textContent = postedText;
+        } else {
+            document.getElementById('parsedPosted').textContent = '-';
+        }
 
         if (parsed.skills && parsed.skills.length > 0) {
             document.getElementById('parsedSkills').textContent = parsed.skills.join(', ');
@@ -197,6 +223,15 @@ async function parseDescription() {
         }
 
         document.getElementById('parsedInfo').classList.add('show');
+
+        // Auto-select source based on detected format
+        if (parsed.source_format === 'linkedin') {
+            document.getElementById('sourceSelect').value = 'linkedin';
+            // Replace description with cleaned version (header removed)
+            if (parsed.cleaned_description) {
+                document.getElementById('jobDescription').value = parsed.cleaned_description;
+            }
+        }
 
         // Auto-fill title if empty and extracted
         const titleInput = document.getElementById('titleInput');
@@ -226,6 +261,21 @@ async function parseDescription() {
             }
         } else {
             companyHint.style.display = 'none';
+        }
+
+        // Auto-fill location if empty and extracted
+        const locationInput = document.getElementById('locationInput');
+        const locationHint = document.getElementById('locationHint');
+        if (parsed.extracted_location) {
+            if (!locationInput.value) {
+                locationInput.value = parsed.extracted_location;
+                locationHint.style.display = 'none';
+            } else if (locationInput.value !== parsed.extracted_location) {
+                locationHint.innerHTML = `Detected: <a href="#" onclick="document.getElementById('locationInput').value='${parsed.extracted_location.replace(/'/g, "\\'")}'; this.parentElement.style.display='none'; return false;">${parsed.extracted_location}</a>`;
+                locationHint.style.display = 'block';
+            }
+        } else {
+            locationHint.style.display = 'none';
         }
 
     } catch (err) {

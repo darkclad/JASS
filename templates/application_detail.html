@@ -43,8 +43,59 @@
 <div class="row">
     <!-- Documents -->
     <div class="col-lg-8">
+        {% if application.status == 'applied' %}
+        <!-- Read-only view for applied applications -->
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
+                    <i class="bi bi-file-person"></i> Resume
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cover-letter-tab" type="button">
+                    <i class="bi bi-envelope"></i> Cover Letter
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="resume-tab">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Resume</span>
+                        {% if application.resume_pdf %}
+                        <a href="{{ url_for('download_document', id=application.id, doc_type='resume_pdf') }}"
+                           class="btn btn-sm btn-success">
+                            <i class="bi bi-download"></i> Download PDF
+                        </a>
+                        {% endif %}
+                    </div>
+                    <div class="card-body doc-preview">
+                        {{ resume_html|safe }}
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="cover-letter-tab">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Cover Letter</span>
+                        {% if application.cover_letter_pdf %}
+                        <a href="{{ url_for('download_document', id=application.id, doc_type='cover_letter_pdf') }}"
+                           class="btn btn-sm btn-success">
+                            <i class="bi bi-download"></i> Download PDF
+                        </a>
+                        {% endif %}
+                    </div>
+                    <div class="card-body doc-preview">
+                        {{ cover_letter_html|safe }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <!-- Editable view for non-applied applications -->
         <form action="{{ url_for('update_application', id=application.id) }}" method="POST" id="saveForm">
-            <!-- Tabs for Resume / Cover Letter -->
             <ul class="nav nav-tabs mb-3" role="tablist">
                 <li class="nav-item">
                     <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
@@ -126,11 +177,13 @@
                 </button>
             </div>
         </form>
+        {% endif %}
     </div>
 
     <!-- Sidebar -->
     <div class="col-lg-4">
-        <!-- Applicant Info -->
+        {% if application.status != 'applied' %}
+        <!-- Applicant Info (only for non-applied) -->
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-person"></i> Applicant Info
@@ -163,6 +216,7 @@
                 </form>
             </div>
         </div>
+        {% endif %}
 
         <!-- Actions -->
         <div class="card mb-4">
@@ -170,9 +224,23 @@
                 <i class="bi bi-lightning"></i> Actions
             </div>
             <div class="card-body">
+                <!-- View Job link -->
+                <a href="{{ url_for('job_detail', id=application.job.id) }}" class="btn btn-outline-info w-100 mb-2">
+                    <i class="bi bi-briefcase"></i> View Job Details
+                </a>
+
+                {% if application.job.url %}
                 <a href="{{ application.job.url }}" target="_blank" class="btn btn-outline-primary w-100 mb-2">
                     <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
                 </a>
+                {% endif %}
+
+                {% if application.status != 'applied' %}
+                <form action="{{ url_for('mark_application_applied', id=application.id) }}" method="POST">
+                    <button type="submit" class="btn btn-success w-100 mb-2">
+                        <i class="bi bi-check2-circle"></i> Mark as Applied
+                    </button>
+                </form>
 
                 <form action="{{ url_for('tailor_job', id=application.job.id) }}" method="POST" id="regenForm">
                     <button type="submit" class="btn btn-outline-secondary w-100 mb-2" id="regenBtn"
@@ -181,6 +249,14 @@
                         <span class="spinner-border" role="status"></span>
                     </button>
                 </form>
+                {% else %}
+                <div class="alert alert-success mb-2 py-2 text-center">
+                    <i class="bi bi-check2-circle"></i> Applied
+                    {% if application.applied_at %}
+                    <br><small>{{ application.applied_at.strftime('%Y-%m-%d %H:%M') }}</small>
+                    {% endif %}
+                </div>
+                {% endif %}
 
                 <hr>
 

@@ -14,7 +14,7 @@
                     <th>Job</th>
                     <th>Company</th>
                     <th>Status</th>
-                    <th>Tailored</th>
+                    <th>Tailored / Applied</th>
                     <th>Documents</th>
                     <th>Actions</th>
                 </tr>
@@ -26,10 +26,21 @@
                         <a href="{{ url_for('application_detail', id=app.id) }}" class="text-decoration-none fw-bold">
                             {{ app.job.title }}
                         </a>
+                        {% if app.job.url %}
+                        <a href="{{ app.job.url }}" target="_blank" class="text-muted ms-1" title="Original Job Posting">
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 0.75rem;"></i>
+                        </a>
+                        {% endif %}
                     </td>
                     <td>{{ app.job.company }}</td>
                     <td><span class="badge status-{{ app.status }}">{{ app.status }}</span></td>
-                    <td>{{ app.tailored_at.strftime('%Y-%m-%d %H:%M') if app.tailored_at else '-' }}</td>
+                    <td>
+                        {% if app.status == 'applied' and app.applied_at %}
+                        {{ app.applied_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% else %}
+                        {{ app.tailored_at.strftime('%Y-%m-%d %H:%M') if app.tailored_at else '-' }}
+                        {% endif %}
+                    </td>
                     <td>
                         {% if app.resume_pdf %}
                         <a href="{{ url_for('download_document', id=app.id, doc_type='resume_pdf') }}"
@@ -46,8 +57,20 @@
                     </td>
                     <td>
                         <a href="{{ url_for('application_detail', id=app.id) }}" class="btn btn-sm btn-primary">
-                            <i class="bi bi-eye"></i> View
+                            <i class="bi bi-eye"></i>
                         </a>
+                        {% if app.job.url %}
+                        <a href="{{ app.job.url }}" target="_blank" class="btn btn-sm btn-outline-secondary" title="View Job">
+                            <i class="bi bi-briefcase"></i>
+                        </a>
+                        {% endif %}
+                        {% if app.status != 'applied' %}
+                        <form action="{{ url_for('mark_application_applied', id=app.id) }}" method="POST" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-success" title="Mark as Applied">
+                                <i class="bi bi-check2-circle"></i>
+                            </button>
+                        </form>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

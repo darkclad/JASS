@@ -23,6 +23,8 @@ def parse_job_description(description: str, title: str = '', location: str = '')
         - skills (list)
         - extracted_title (if found)
         - extracted_company (if found)
+        - extracted_location (if found)
+        - source_format (linkedin, generic)
     """
     result = {
         'salary_min': None,
@@ -32,21 +34,41 @@ def parse_job_description(description: str, title: str = '', location: str = '')
         'experience_years': None,
         'skills': [],
         'extracted_title': None,
-        'extracted_company': None
+        'extracted_company': None,
+        'extracted_location': None,
+        'cleaned_description': None,
+        'posted_at': None,
+        'source_format': 'generic'
     }
 
     if not description:
         return result
 
-    text = description.lower()
-    full_text = f"{title} {location} {description}".lower()
+    # Detect source format and use specialized parser
+    if is_linkedin_format(description):
+        result['source_format'] = 'linkedin'
+        linkedin_data = parse_linkedin_header(description)
+        result['extracted_company'] = linkedin_data.get('company')
+        result['extracted_title'] = linkedin_data.get('title')
+        result['extracted_location'] = linkedin_data.get('location')
+        result['cleaned_description'] = linkedin_data.get('cleaned_description')
+        result['posted_at'] = linkedin_data.get('posted_at')
+        if linkedin_data.get('is_remote') is not None:
+            result['is_remote'] = linkedin_data.get('is_remote')
+
+    # For LinkedIn jobs, use cleaned description (without header) for parsing
+    # This avoids parsing artifacts from the header like "1 day ago"
+    parse_text = result['cleaned_description'] if result['cleaned_description'] else description
+    text = parse_text.lower()
+    full_text = f"{title} {location} {parse_text}".lower()
 
     # Parse salary
-    salary_info = parse_salary(description)
+    salary_info = parse_salary(parse_text)
     result.update(salary_info)
 
-    # Parse remote status
-    result['is_remote'] = parse_remote_status(full_text, location)
+    # Parse remote status (if not already set by format-specific parser)
+    if result['is_remote'] is None:
+        result['is_remote'] = parse_remote_status(full_text, location)
 
     # Parse experience
     result['experience_years'] = parse_experience(text)
@@ -54,13 +76,176 @@ def parse_job_description(description: str, title: str = '', location: str = '')
     # Parse skills
     result['skills'] = parse_skills(text)
 
-    # Try to extract title and company from description
-    result['extracted_title'] = parse_job_title(description)
-    result['extracted_company'] = parse_company_name(description)
+    # Try generic extraction if format-specific didn't find values
+    if not result['extracted_title']:
+        result['extracted_title'] = parse_job_title(description)
+    if not result['extracted_company']:
+        result['extracted_company'] = parse_company_name(description)
 
-    log.debug(f"Parsed job: salary={result['salary_text']}, remote={result['is_remote']}, "
-              f"exp={result['experience_years']}, skills={len(result['skills'])}, "
-              f"title={result['extracted_title']}, company={result['extracted_company']}")
+    log.debug(f"Parsed job ({result['source_format']}): salary={result['salary_text']}, "
+              f"remote={result['is_remote']}, exp={result['experience_years']}, "
+              f"skills={len(result['skills'])}, title={result['extracted_title']}, "
+              f"company={result['extracted_company']}, location={result['extracted_location']}")
+
+    return result
+
+
+def is_linkedin_format(text: str) -> bool:
+    """Detect if text is copied from LinkedIn job posting."""
+    # LinkedIn has characteristic patterns in header
+    indicators = [
+        'About the job',
+        'Easy Apply',
+        'Save\nSave',
+        'applicants',
+        'Show more options',
+        'Matches your job preferences',
+        'Meet the hiring team',
+    ]
+    count = sum(1 for ind in indicators if ind in text)
+    return count >= 2
+
+
+def parse_linkedin_header(text: str) -> Dict:
+    """
+    Parse LinkedIn job posting header format.
+
+    LinkedIn format (typical):
+    Line 1: Company name
+    Line 2-3: "Share", "Show more options" (skip)
+    Line 4: Job title
+    Line 5: Location · time ago · applicants
+    ...
+    "Remote" or "On-site" or "Hybrid" line
+    ...
+    "About the job" marks end of header
+    """
+    from datetime import datetime, timedelta
+
+    result = {
+        'company': None,
+        'title': None,
+        'location': None,
+        'is_remote': None,
+        'cleaned_description': None,
+        'posted_at': None
+    }
+
+    # Split into header (before "About the job") and body
+    parts = re.split(r'\n\s*About the job\s*\n', text, maxsplit=1, flags=re.IGNORECASE)
+    header = parts[0] if parts else text
+
+    # Extract the body (actual job description) after "About the job"
+    if len(parts) > 1:
+        result['cleaned_description'] = parts[1].strip()
+
+    lines = [line.strip() for line in header.split('\n') if line.strip()]
+
+    if not lines:
+        return result
+
+    # First non-empty line is usually company name
+    # Skip common LinkedIn UI text
+    skip_patterns = [
+        r'^share$', r'^show more options$', r'^easy apply$', r'^save$',
+        r'^promoted', r'^message$', r'^follow$', r'^\d+', r'^meet the',
+        r'^you\'d be', r'^your profile', r'^show match', r'^tailor',
+        r'^help me', r'^create cover', r'^beta$', r'^is this information',
+        r'^people you can', r'^company alumni', r'^show all$',
+        r'hiring team', r'^job poster$', r'^\d+\w*$', r'^researcher$',
+    ]
+
+    def is_skip_line(line):
+        lower = line.lower()
+        return any(re.match(p, lower) for p in skip_patterns)
+
+    # Find company (first substantial line that's not UI text)
+    for i, line in enumerate(lines):
+        if not is_skip_line(line) and len(line) > 1:
+            # Company name is usually short and at the start
+            if len(line) < 60 and not any(x in line.lower() for x in ['developer', 'engineer', 'manager', 'analyst', 'remote', 'full-time', 'part-time']):
+                result['company'] = line
+                break
+
+    # Find job title - look for lines with job keywords
+    title_keywords = ['developer', 'engineer', 'manager', 'architect', 'lead', 'director',
+                      'analyst', 'scientist', 'designer', 'specialist', 'consultant',
+                      'administrator', 'coordinator', 'associate', 'senior', 'junior',
+                      'staff', 'principal', 'head of', 'vp ', 'vice president']
+
+    for line in lines:
+        lower = line.lower()
+        # Skip if it's the company we already found
+        if result['company'] and line == result['company']:
+            continue
+        # Check if it looks like a job title
+        if any(kw in lower for kw in title_keywords):
+            # Clean up common suffixes
+            title = re.sub(r'\s+at\s+.*$', '', line, flags=re.IGNORECASE)
+            title = re.sub(r'\s*·.*$', '', title)  # Remove "· location" suffix
+            title = title.strip()
+            if len(title) > 3 and len(title) < 80:
+                result['title'] = title
+                break
+
+    # Find location and job age - look for "Location · X ago · applicants" pattern
+    for line in lines:
+        # Pattern: "United States · 3 weeks ago · Over 100 applicants"
+        # Location is the first part before the first ·
+        if '·' in line and ('ago' in line.lower() or 'applicant' in line.lower()):
+            parts = line.split('·')
+            if parts:
+                loc = parts[0].strip()
+                # Validate it looks like a location
+                if loc and len(loc) > 2 and len(loc) < 60:
+                    # Skip if it's just a number or common UI text
+                    if not re.match(r'^\d+', loc) and loc.lower() not in ['share', 'save', 'easy apply']:
+                        result['location'] = loc
+
+                # Extract job age from "X ago" part
+                for part in parts:
+                    part_lower = part.lower().strip()
+                    if 'ago' in part_lower:
+                        # Parse "1 day ago", "3 weeks ago", "2 months ago", etc.
+                        age_match = re.search(r'(\d+)\s*(hour|day|week|month)s?\s*ago', part_lower)
+                        if age_match:
+                            num = int(age_match.group(1))
+                            unit = age_match.group(2)
+                            now = datetime.utcnow()
+                            if unit == 'hour':
+                                result['posted_at'] = now - timedelta(hours=num)
+                            elif unit == 'day':
+                                result['posted_at'] = now - timedelta(days=num)
+                            elif unit == 'week':
+                                result['posted_at'] = now - timedelta(weeks=num)
+                            elif unit == 'month':
+                                result['posted_at'] = now - timedelta(days=num * 30)
+                break
+        # Pattern: "Company · Location" like "Luxoft · United States (Remote)"
+        elif '·' in line and 'ago' not in line.lower():
+            loc_match = re.search(r'·\s*([A-Z][A-Za-z\s,()]+)$', line)
+            if loc_match:
+                loc = loc_match.group(1).strip()
+                if len(loc) > 2 and len(loc) < 50:
+                    result['location'] = loc
+                    break
+
+    # Check for remote status
+    for line in lines:
+        lower = line.lower()
+        if 'remote' in lower and ('workplace type' in lower or line.strip().lower() == 'remote'):
+            result['is_remote'] = True
+            break
+        if 'on-site' in lower or 'onsite' in lower:
+            result['is_remote'] = False
+            break
+        if 'hybrid' in lower:
+            result['is_remote'] = True  # Treat hybrid as partially remote
+            break
+
+    # Also check if location contains "(Remote)"
+    if result['location'] and '(remote)' in result['location'].lower():
+        result['is_remote'] = True
 
     return result
 

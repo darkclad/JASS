@@ -73,9 +73,9 @@
                         <i class="bi bi-building"></i> On-site
                     </span>
                     {% endif %}
-                    {% if job.experience_years %}
-                    <span class="badge bg-primary job-meta-badge me-2">
-                        <i class="bi bi-clock-history"></i> {{ job.experience_years }} years
+                    {% if job.posted_at %}
+                    <span class="badge bg-primary job-meta-badge me-2" title="Posted {{ job.posted_at.strftime('%Y-%m-%d') }}">
+                        <i class="bi bi-calendar-event"></i> {{ job_age }}
                     </span>
                     {% endif %}
                     {% if job.source and job.source != 'greenhouse' %}
