@@ -70,7 +70,8 @@ class AIProvider(ABC):
 
     @abstractmethod
     def generate_cover_letter(self, resume: str, job_description: str,
-                               company: str, job_title: str) -> str:
+                               company: str, job_title: str,
+                               hiring_manager: str = None) -> str:
         """Generate a cover letter for the job."""
         pass
 
@@ -78,19 +79,7 @@ class AIProvider(ABC):
 class ClaudeProvider(AIProvider):
     """Claude AI provider using Anthropic API."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model
-
-    def generate_tailored_resume(self, master_resume: str, job_description: str) -> str:
-        """Generate a tailored resume."""
-        prompt = f"""You are an expert resume writer. Your task is to tailor the following master resume for a specific job posting.
-
-MASTER RESUME:
-{master_resume}
-
-JOB DESCRIPTION:
-{job_description}
+    DEFAULT_RESUME_PROMPT = """You are an expert resume writer. Your task is to tailor a resume for a specific job posting.
 
 INSTRUCTIONS:
 1. Keep the same overall structure and format (Markdown), including all HTML/CSS styling
@@ -100,7 +89,38 @@ INSTRUCTIONS:
 5. Adjust the Professional Summary to highlight the most relevant experience
 6. Reorder Technical Skills to put the most relevant ones first
 7. Keep all job dates, titles, and companies exactly as they appear
-8. Ensure the resume is ATS-friendly
+8. Ensure the resume is ATS-friendly"""
+
+    DEFAULT_COVER_LETTER_PROMPT = """You are an expert cover letter writer. Create a compelling cover letter for a job application.
+
+INSTRUCTIONS:
+1. Open with genuine enthusiasm for the specific role and company
+2. Connect 2-3 key experiences from the resume to job requirements
+3. Show knowledge of the company/industry
+4. Demonstrate cultural fit and soft skills
+5. Close with a clear call to action
+6. Keep it concise (3-4 paragraphs)
+7. Use a professional but personable tone
+8. DO NOT include any placeholder text like [Current Date], [Your Name], [Company Address], [City, State, Zip], etc.
+9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
+10. Extract the applicant's name from the resume and use it in the signature"""
+
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514",
+                 resume_prompt: str = None, cover_letter_prompt: str = None):
+        self.client = anthropic.Anthropic(api_key=api_key)
+        self.model = model
+        self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
+        self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
+
+    def generate_tailored_resume(self, master_resume: str, job_description: str) -> str:
+        """Generate a tailored resume."""
+        prompt = f"""{self.resume_prompt}
+
+MASTER RESUME:
+{master_resume}
+
+JOB DESCRIPTION:
+{job_description}
 
 Return ONLY the tailored resume in Markdown format, no explanations."""
 
@@ -113,9 +133,15 @@ Return ONLY the tailored resume in Markdown format, no explanations."""
         return response.content[0].text
 
     def generate_cover_letter(self, resume: str, job_description: str,
-                               company: str, job_title: str) -> str:
+                               company: str, job_title: str,
+                               hiring_manager: str = None) -> str:
         """Generate a cover letter."""
-        prompt = f"""You are an expert cover letter writer. Create a compelling cover letter for the following job application.
+        if hiring_manager:
+            greeting_line = f"HIRING MANAGER: {hiring_manager} (use 'Dear {hiring_manager},' as the greeting)"
+        else:
+            greeting_line = "HIRING MANAGER: Unknown (use 'Dear Hiring Manager,' as the greeting)"
+
+        prompt = f"""{self.cover_letter_prompt}
 
 RESUME:
 {resume}
@@ -125,18 +151,7 @@ JOB DESCRIPTION:
 
 COMPANY: {company}
 POSITION: {job_title}
-
-INSTRUCTIONS:
-1. Open with genuine enthusiasm for the specific role and company
-2. Connect 2-3 key experiences from the resume to job requirements
-3. Show knowledge of the company/industry
-4. Demonstrate cultural fit and soft skills
-5. Close with a clear call to action
-6. Keep it concise (3-4 paragraphs)
-7. Use a professional but personable tone
-8. DO NOT include any placeholder text like [Current Date], [Your Name], [Company Address], [City, State, Zip], etc.
-9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
-10. Extract the applicant's name from the resume and use it in the signature
+{greeting_line}
 
 Return ONLY the cover letter in Markdown format, no explanations."""
 
@@ -161,9 +176,15 @@ class OpenAIProvider(AIProvider):
         'gpt-3.5-turbo': 16385,
     }
 
-    def __init__(self, api_key: str, model: str = "gpt-4"):
+    DEFAULT_RESUME_PROMPT = ClaudeProvider.DEFAULT_RESUME_PROMPT
+    DEFAULT_COVER_LETTER_PROMPT = ClaudeProvider.DEFAULT_COVER_LETTER_PROMPT
+
+    def __init__(self, api_key: str, model: str = "gpt-4",
+                 resume_prompt: str = None, cover_letter_prompt: str = None):
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model
+        self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
+        self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
 
     def _get_max_tokens(self, prompt_tokens: int) -> int:
         """Calculate safe max_tokens based on model limits."""
@@ -174,23 +195,13 @@ class OpenAIProvider(AIProvider):
 
     def generate_tailored_resume(self, master_resume: str, job_description: str) -> str:
         """Generate a tailored resume."""
-        prompt = f"""You are an expert resume writer. Your task is to tailor the following master resume for a specific job posting.
+        prompt = f"""{self.resume_prompt}
 
 MASTER RESUME:
 {master_resume}
 
 JOB DESCRIPTION:
 {job_description}
-
-INSTRUCTIONS:
-1. Keep the same overall structure and format (Markdown), including all HTML/CSS styling
-2. PRESERVE ALL JOB SECTIONS - do NOT remove any jobs from the Professional Experience section
-3. For each job, rewrite bullet points to emphasize skills relevant to the target role
-4. Incorporate keywords from the job description naturally into bullet points
-5. Adjust the Professional Summary to highlight the most relevant experience
-6. Reorder Technical Skills to put the most relevant ones first
-7. Keep all job dates, titles, and companies exactly as they appear
-8. Ensure the resume is ATS-friendly
 
 Return ONLY the tailored resume in Markdown format, no explanations."""
 
@@ -219,9 +230,15 @@ Return ONLY the tailored resume in Markdown format, no explanations."""
         return response.choices[0].message.content
 
     def generate_cover_letter(self, resume: str, job_description: str,
-                               company: str, job_title: str) -> str:
+                               company: str, job_title: str,
+                               hiring_manager: str = None) -> str:
         """Generate a cover letter."""
-        prompt = f"""You are an expert cover letter writer. Create a compelling cover letter for the following job application.
+        if hiring_manager:
+            greeting_line = f"HIRING MANAGER: {hiring_manager} (use 'Dear {hiring_manager},' as the greeting)"
+        else:
+            greeting_line = "HIRING MANAGER: Unknown (use 'Dear Hiring Manager,' as the greeting)"
+
+        prompt = f"""{self.cover_letter_prompt}
 
 RESUME:
 {resume}
@@ -231,18 +248,7 @@ JOB DESCRIPTION:
 
 COMPANY: {company}
 POSITION: {job_title}
-
-INSTRUCTIONS:
-1. Open with genuine enthusiasm for the specific role and company
-2. Connect 2-3 key experiences from the resume to job requirements
-3. Show knowledge of the company/industry
-4. Demonstrate cultural fit and soft skills
-5. Close with a clear call to action
-6. Keep it concise (3-4 paragraphs)
-7. Use a professional but personable tone
-8. DO NOT include any placeholder text like [Current Date], [Your Name], [Company Address], [City, State, Zip], etc.
-9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
-10. Extract the applicant's name from the resume and use it in the signature
+{greeting_line}
 
 Return ONLY the cover letter in Markdown format, no explanations."""
 
@@ -267,17 +273,20 @@ Return ONLY the cover letter in Markdown format, no explanations."""
 
 
 def get_ai_provider(provider: str = None, api_key: str = None,
-                    model: str = None) -> AIProvider:
+                    model: str = None, resume_prompt: str = None,
+                    cover_letter_prompt: str = None) -> AIProvider:
     """
     Factory function to get an AI provider.
 
     Args:
-        provider: 'claude' or 'openai'
-        api_key: API key (uses env var if not provided)
+        provider: 'claude', 'openai', or 'claude-cli'
+        api_key: API key (uses env var if not provided, not needed for claude-cli)
         model: Model name
+        resume_prompt: Custom prompt for resume generation
+        cover_letter_prompt: Custom prompt for cover letter generation
 
     Returns:
-        AIProvider instance
+        AIProvider instance (or ClaudeCLIProvider for claude-cli)
     """
     provider = provider or 'claude'
 
@@ -285,13 +294,20 @@ def get_ai_provider(provider: str = None, api_key: str = None,
         key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         if not key:
             raise ValueError("ANTHROPIC_API_KEY not set")
-        return ClaudeProvider(key, model or "claude-sonnet-4-20250514")
+        return ClaudeProvider(key, model or "claude-sonnet-4-20250514",
+                              resume_prompt, cover_letter_prompt)
 
     elif provider == 'openai':
         key = api_key or os.environ.get('OPENAI_API_KEY')
         if not key:
             raise ValueError("OPENAI_API_KEY not set")
-        return OpenAIProvider(key, model or "gpt-4")
+        return OpenAIProvider(key, model or "gpt-4",
+                              resume_prompt, cover_letter_prompt)
+
+    elif provider == 'claude-cli':
+        from claude_cli import ClaudeCLIProvider
+        return ClaudeCLIProvider(model or "claude-sonnet-4-20250514",
+                                 resume_prompt, cover_letter_prompt)
 
     else:
         raise ValueError(f"Unknown provider: {provider}")

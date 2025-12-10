@@ -1,13 +1,23 @@
 """JASS - Job Application Support System."""
 import os
+import sys
 import json
 from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 import markdown
 
 from config import Config
 from models import db, MasterResume, Job, Application, AIConfig, SearchHistory, AppSettings
-from logger import get_logger
+from logger import setup_logging, get_logger
+
+# Parse verbosity from command line (-d, -dd, -ddd, etc.)
+verbosity = 0
+for arg in sys.argv[1:]:
+    if arg.startswith('-d'):
+        verbosity = len(arg) - 1  # Count 'd's after the dash
+
+# Initialize logging with verbosity level
+setup_logging(verbosity)
 
 # Get logger for this module
 log = get_logger('app')
@@ -267,7 +277,8 @@ def add_job_post():
         is_remote=parsed.get('is_remote'),
         experience_years=parsed.get('experience_years'),
         skills=json.dumps(parsed.get('skills', [])) if parsed.get('skills') else None,
-        posted_at=parsed.get('posted_at')
+        posted_at=parsed.get('posted_at'),
+        hiring_manager=parsed.get('hiring_manager')
     )
 
     db.session.add(job)
@@ -366,7 +377,7 @@ def mark_application_applied(id):
 def tailor_job(id):
     """Generate tailored resume and cover letter for a job."""
     from ai_service import get_ai_provider
-    from document_gen import save_application_documents, extract_applicant_info
+    from document_gen import save_application_documents, extract_applicant_info, get_application_folder_name
 
     job = Job.query.get_or_404(id)
     log.info(f"Tailoring job {id}: {job.title} at {job.company}")
@@ -385,32 +396,58 @@ def tailor_job(id):
 
     # Get AI config
     ai_config = AIConfig.query.filter_by(is_active=True).first()
-    if not ai_config or not ai_config.api_key:
+    if not ai_config:
         log.warning("No AI config found")
         flash('Please configure AI settings first', 'error')
+        return redirect(url_for('settings'))
+
+    # Claude CLI doesn't need an API key, others do
+    if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+        log.warning("No API key configured for non-CLI provider")
+        flash('Please configure AI API key first', 'error')
         return redirect(url_for('settings'))
 
     log.debug(f"Using AI provider: {ai_config.provider}/{ai_config.model_name}")
 
     try:
-        # Get AI provider
-        ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name)
+        # Get custom prompts or use defaults
+        resume_prompt = AppSettings.get('resume_prompt')
+        cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+        # Get AI provider with custom prompts
+        ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                             resume_prompt, cover_letter_prompt)
 
         # Get plain text description
         from bs4 import BeautifulSoup
         desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
         log.debug(f"Job description: {len(desc_text)} chars")
 
+        # Prepare application directory for Claude CLI (same naming as save_application_documents)
+        folder_name = get_application_folder_name(job.company, job.id)
+        app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+
         # Generate tailored resume
         log.info("Generating tailored resume...")
-        tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
+        if ai_config.provider == 'claude-cli':
+            # Claude CLI needs the app_dir to save/read files
+            tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
+        else:
+            tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
         log.info(f"Resume generated: {len(tailored_resume)} chars")
 
         # Generate cover letter
         log.info("Generating cover letter...")
-        cover_letter = ai.generate_cover_letter(
-            tailored_resume, desc_text, job.company, job.title
-        )
+        if ai_config.provider == 'claude-cli':
+            cover_letter = ai.generate_cover_letter(
+                tailored_resume, desc_text, job.company, job.title, app_dir,
+                job.hiring_manager
+            )
+        else:
+            cover_letter = ai.generate_cover_letter(
+                tailored_resume, desc_text, job.company, job.title,
+                job.hiring_manager
+            )
         log.info(f"Cover letter generated: {len(cover_letter)} chars")
 
         # Extract applicant info from master resume
@@ -472,6 +509,129 @@ def tailor_job(id):
         return redirect(url_for('job_detail', id=id))
 
 
+@app.route('/jobs/<int:id>/tailor-stream')
+def tailor_job_stream(id):
+    """Generate tailored resume and cover letter with SSE progress updates."""
+    from ai_service import get_ai_provider
+    from document_gen import save_application_documents, extract_applicant_info, get_application_folder_name
+
+    def generate():
+        job = Job.query.get(id)
+        if not job:
+            yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+            return
+
+        log.info(f"Tailoring job {id}: {job.title} at {job.company}")
+
+        # Get master resume
+        master_resume = MasterResume.query.filter_by(is_default=True).first()
+        if not master_resume:
+            master_resume = MasterResume.query.first()
+
+        if not master_resume:
+            yield f"data: {json.dumps({'error': 'No master resume found'})}\n\n"
+            return
+
+        # Get AI config
+        ai_config = AIConfig.query.filter_by(is_active=True).first()
+        if not ai_config:
+            yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
+            return
+
+        if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+            yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+            return
+
+        try:
+            yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
+
+            # Get custom prompts
+            resume_prompt = AppSettings.get('resume_prompt')
+            cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+            ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                 resume_prompt, cover_letter_prompt)
+
+            # Get plain text description
+            from bs4 import BeautifulSoup
+            desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
+
+            # Prepare application directory
+            folder_name = get_application_folder_name(job.company, job.id)
+            app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+
+            # Generate tailored resume
+            yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
+            if ai_config.provider == 'claude-cli':
+                tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
+            else:
+                tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
+
+            # Generate cover letter
+            yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
+            if ai_config.provider == 'claude-cli':
+                cover_letter = ai.generate_cover_letter(
+                    tailored_resume, desc_text, job.company, job.title, app_dir,
+                    job.hiring_manager
+                )
+            else:
+                cover_letter = ai.generate_cover_letter(
+                    tailored_resume, desc_text, job.company, job.title,
+                    job.hiring_manager
+                )
+
+            # Save documents
+            yield f"data: {json.dumps({'status': 'Generating PDFs...'})}\n\n"
+            applicant_info = extract_applicant_info(master_resume.content)
+            jass_dir = os.path.dirname(os.path.abspath(__file__))
+
+            # Delete old application folder if exists
+            application = job.application
+            if application and application.resume_md:
+                old_dir = os.path.dirname(application.resume_md)
+                if os.path.exists(old_dir):
+                    import shutil
+                    shutil.rmtree(old_dir)
+
+            paths = save_application_documents(
+                job.id, tailored_resume, cover_letter, Config.APPLICATIONS_DIR,
+                company=job.company,
+                first_name=applicant_info.get('first_name'),
+                last_name=applicant_info.get('last_name'),
+                script_dir=jass_dir
+            )
+
+            # Create or update application
+            if not application:
+                application = Application(job_id=job.id)
+                db.session.add(application)
+
+            application.resume_md = paths.get('resume_md')
+            application.resume_pdf = paths.get('resume_pdf')
+            application.cover_letter_md = paths.get('cover_letter_md')
+            application.cover_letter_pdf = paths.get('cover_letter_pdf')
+            application.ai_provider = ai_config.provider
+            application.ai_model = ai_config.model_name
+            application.tailored_at = datetime.utcnow()
+            application.status = 'ready'
+            application.first_name = applicant_info.get('first_name', '')
+            application.last_name = applicant_info.get('last_name', '')
+            application.email = applicant_info.get('email', '')
+            application.phone = applicant_info.get('phone', '')
+
+            job.status = 'ready'
+            db.session.commit()
+
+            log.info(f"Documents saved successfully for application {application.id}")
+            yield f"data: {json.dumps({'status': 'Complete!', 'redirect': url_for('application_detail', id=application.id)})}\n\n"
+
+        except Exception as e:
+            log.error(f"Error generating documents: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
 # ============ Applications ============
 
 @app.route('/applications')
@@ -481,11 +641,19 @@ def applications():
     return render_template('applications.html', applications=all_applications)
 
 
+def strip_html_for_preview(content: str) -> str:
+    """Strip HTML tags and style blocks from markdown for clean preview."""
+    import re
+    # Remove <style>...</style> blocks
+    content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # Remove all HTML tags
+    content = re.sub(r'<[^>]+>', '', content)
+    return content
+
+
 @app.route('/applications/<int:id>')
 def application_detail(id):
     """View application details with tailored documents."""
-    from document_gen import extract_applicant_info
-
     application = Application.query.get_or_404(id)
 
     # Read document contents
@@ -500,19 +668,12 @@ def application_detail(id):
         with open(application.cover_letter_md, 'r', encoding='utf-8') as f:
             cover_letter_content = f.read()
 
-    # Pre-fill applicant info from resume if empty
-    if resume_content and not application.first_name:
-        applicant_info = extract_applicant_info(resume_content)
-        log.debug(f"Pre-filling applicant info from resume: {applicant_info}")
-        application.first_name = applicant_info.get('first_name', '')
-        application.last_name = applicant_info.get('last_name', '')
-        application.email = applicant_info.get('email', '')
-        application.phone = applicant_info.get('phone', '')
-        db.session.commit()
+    # Strip HTML for clean preview, convert to HTML
+    resume_preview = strip_html_for_preview(resume_content)
+    cover_letter_preview = strip_html_for_preview(cover_letter_content)
 
-    # Convert to HTML for preview
-    resume_html = markdown.markdown(resume_content, extensions=['tables', 'nl2br'])
-    cover_letter_html = markdown.markdown(cover_letter_content, extensions=['nl2br'])
+    resume_html = markdown.markdown(resume_preview, extensions=['tables', 'nl2br'])
+    cover_letter_html = markdown.markdown(cover_letter_preview, extensions=['nl2br'])
 
     return render_template('application_detail.html',
                            application=application,
@@ -551,22 +712,6 @@ def update_application(id):
     db.session.commit()
 
     flash('Documents updated', 'success')
-    return redirect(url_for('application_detail', id=id))
-
-
-@app.route('/applications/<int:id>/update-info', methods=['POST'])
-def update_applicant_info(id):
-    """Update applicant info only (no document changes)."""
-    application = Application.query.get_or_404(id)
-
-    application.first_name = request.form.get('first_name', '')
-    application.last_name = request.form.get('last_name', '')
-    application.email = request.form.get('email', '')
-    application.phone = request.form.get('phone', '')
-
-    db.session.commit()
-
-    flash('Applicant info updated', 'success')
     return redirect(url_for('application_detail', id=id))
 
 
@@ -687,11 +832,19 @@ def settings():
     else:
         boards = Config.DEFAULT_BOARDS
 
+    # Get custom prompts or use defaults
+    resume_prompt = AppSettings.get('resume_prompt') or Config.DEFAULT_RESUME_PROMPT
+    cover_letter_prompt = AppSettings.get('cover_letter_prompt') or Config.DEFAULT_COVER_LETTER_PROMPT
+
     return render_template('settings.html',
                            configs=configs,
                            active_config=active_config,
                            boards=boards,
-                           default_boards=Config.DEFAULT_BOARDS)
+                           default_boards=Config.DEFAULT_BOARDS,
+                           resume_prompt=resume_prompt,
+                           cover_letter_prompt=cover_letter_prompt,
+                           default_resume_prompt=Config.DEFAULT_RESUME_PROMPT,
+                           default_cover_letter_prompt=Config.DEFAULT_COVER_LETTER_PROMPT)
 
 
 @app.route('/settings/save', methods=['POST'])
@@ -722,22 +875,48 @@ def save_settings():
 @app.route('/settings/test', methods=['POST'])
 def test_settings():
     """Test AI API connection with actual API call."""
-    import anthropic
-    import openai
-
     config = AIConfig.query.filter_by(is_active=True).first()
-    if not config or not config.api_key:
-        return jsonify({'success': False, 'error': 'No API key configured'})
-
-    # Validate key format matches provider
-    key = config.api_key
-    if config.provider == 'claude' and not key.startswith('sk-ant-'):
-        return jsonify({'success': False, 'error': 'Invalid key format for Claude. Anthropic keys start with sk-ant-'})
-    if config.provider == 'openai' and key.startswith('sk-ant-'):
-        return jsonify({'success': False, 'error': 'This looks like an Anthropic key. Select Claude as provider or use an OpenAI key.'})
+    if not config:
+        return jsonify({'success': False, 'error': 'No AI provider configured'})
 
     try:
+        if config.provider == 'claude-cli':
+            # Test Claude CLI by running a simple prompt
+            import subprocess
+            import shutil
+            try:
+                # Find claude executable (handles PATH issues)
+                claude_cmd = shutil.which('claude') or 'claude'
+                result = subprocess.run(
+                    [claude_cmd, '-p', 'Reply with just the word: OK', '--model', config.model_name or 'claude-sonnet-4-20250514'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    shell=(os.name == 'nt')  # Use shell on Windows for better PATH resolution
+                )
+                if result.returncode == 0 and 'OK' in result.stdout:
+                    return jsonify({'success': True, 'message': f'Claude CLI working (model: {config.model_name})'})
+                else:
+                    error_msg = result.stderr.strip() if result.stderr else result.stdout.strip() or 'Unknown error'
+                    return jsonify({'success': False, 'error': f'Claude CLI test failed: {error_msg}'})
+            except FileNotFoundError:
+                return jsonify({'success': False, 'error': 'Claude CLI not found. Please install it first.'})
+            except subprocess.TimeoutExpired:
+                return jsonify({'success': False, 'error': 'Claude CLI timed out'})
+
+        # For API-based providers, require API key
+        if not config.api_key:
+            return jsonify({'success': False, 'error': 'No API key configured'})
+
+        # Validate key format matches provider
+        key = config.api_key
+        if config.provider == 'claude' and not key.startswith('sk-ant-'):
+            return jsonify({'success': False, 'error': 'Invalid key format for Claude. Anthropic keys start with sk-ant-'})
+        if config.provider == 'openai' and key.startswith('sk-ant-'):
+            return jsonify({'success': False, 'error': 'This looks like an Anthropic key. Select Claude as provider or use an OpenAI key.'})
+
         if config.provider == 'claude':
+            import anthropic
             # Actually test the Anthropic API
             client = anthropic.Anthropic(api_key=config.api_key)
             response = client.messages.create(
@@ -746,7 +925,8 @@ def test_settings():
                 messages=[{"role": "user", "content": "Hi"}]
             )
             return jsonify({'success': True, 'message': f'Connected to {config.model_name}'})
-        else:
+        elif config.provider == 'openai':
+            import openai
             # Actually test the OpenAI API
             client = openai.OpenAI(api_key=config.api_key)
             response = client.chat.completions.create(
@@ -755,6 +935,8 @@ def test_settings():
                 messages=[{"role": "user", "content": "Hi"}]
             )
             return jsonify({'success': True, 'message': f'Connected to {config.model_name}'})
+        else:
+            return jsonify({'success': False, 'error': f'Unknown provider: {config.provider}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -796,6 +978,38 @@ def restore_default_boards():
         db.session.commit()
 
     flash('Restored default boards', 'success')
+    return redirect(url_for('settings'))
+
+
+@app.route('/settings/prompts', methods=['POST'])
+def save_prompts():
+    """Save custom AI prompts."""
+    resume_prompt = request.form.get('resume_prompt', '').strip()
+    cover_letter_prompt = request.form.get('cover_letter_prompt', '').strip()
+
+    if not resume_prompt or not cover_letter_prompt:
+        flash('Both prompts are required', 'danger')
+        return redirect(url_for('settings'))
+
+    # Save to database
+    AppSettings.set('resume_prompt', resume_prompt)
+    AppSettings.set('cover_letter_prompt', cover_letter_prompt)
+
+    flash('AI prompts saved', 'success')
+    return redirect(url_for('settings'))
+
+
+@app.route('/settings/prompts/restore', methods=['POST'])
+def restore_default_prompts():
+    """Restore default AI prompts."""
+    # Delete custom prompt settings
+    for key in ['resume_prompt', 'cover_letter_prompt']:
+        setting = AppSettings.query.filter_by(key=key).first()
+        if setting:
+            db.session.delete(setting)
+    db.session.commit()
+
+    flash('Restored default prompts', 'success')
     return redirect(url_for('settings'))
 
 

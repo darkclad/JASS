@@ -25,13 +25,22 @@
 {% endblock %}
 
 {% block content %}
-<div class="mb-4">
-    <nav aria-label="breadcrumb">
-        <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="{{ url_for('jobs') }}">Jobs</a></li>
-            <li class="breadcrumb-item active">Add Job</li>
-        </ol>
-    </nav>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <nav aria-label="breadcrumb" class="mb-0">
+            <ol class="breadcrumb mb-0">
+                <li class="breadcrumb-item"><a href="{{ url_for('jobs') }}">Jobs</a></li>
+                <li class="breadcrumb-item active">Add Job</li>
+            </ol>
+        </nav>
+    </div>
+    <div>
+        <button type="submit" form="addJobForm" class="btn btn-success me-2" id="submitBtnTop">
+            <span class="btn-text"><i class="bi bi-plus-circle"></i> Add Job</span>
+            <span class="spinner-border" role="status"></span>
+        </button>
+        <a href="{{ url_for('jobs') }}" class="btn btn-outline-secondary">Cancel</a>
+    </div>
 </div>
 
 <div class="row">
@@ -117,13 +126,6 @@
                         </div>
                     </div>
 
-                    <div class="d-flex gap-2">
-                        <button type="submit" class="btn btn-primary" id="submitBtn">
-                            <span class="btn-text"><i class="bi bi-plus"></i> Add Job</span>
-                            <span class="spinner-border" role="status"></span>
-                        </button>
-                        <a href="{{ url_for('jobs') }}" class="btn btn-outline-secondary">Cancel</a>
-                    </div>
                 </form>
             </div>
         </div>
@@ -284,7 +286,7 @@ async function parseDescription() {
 }
 
 document.getElementById('addJobForm')?.addEventListener('submit', function() {
-    setLoading(document.getElementById('submitBtn'), true);
+    setLoading(document.getElementById('submitBtnTop'), true);
 });
 </script>
 {% endblock %}

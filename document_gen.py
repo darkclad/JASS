@@ -10,6 +10,23 @@ from logger import get_logger
 log = get_logger('document_gen')
 
 
+def get_application_folder_name(company: str, job_id: int) -> str:
+    """
+    Generate consistent folder name for application documents.
+
+    Args:
+        company: Company name
+        job_id: Job ID
+
+    Returns:
+        Folder name in format: Company_JobId
+    """
+    if company:
+        safe_company = re.sub(r'[^\w\s-]', '', company).strip().replace(' ', '_')
+        return f"{safe_company}_{job_id}"
+    return str(job_id)
+
+
 def markdown_to_html(md_content: str) -> str:
     """Convert Markdown to HTML."""
     extensions = ['tables', 'fenced_code', 'nl2br']
@@ -24,6 +41,10 @@ def extract_applicant_info(resume_content: str) -> dict:
     # Demian Vladi
     demian.vladi@gmail.com | (858) 888-8888 | San Diego, CA
 
+    Or HTML-styled:
+    <div style="text-align: center;">
+    # Demian Vladi
+
     Returns dict with first_name, last_name, email, phone
     """
     info = {
@@ -33,23 +54,51 @@ def extract_applicant_info(resume_content: str) -> dict:
         'phone': ''
     }
 
-    lines = resume_content.strip().split('\n')
+    # Remove <style>...</style> blocks before processing
+    content = re.sub(r'<style[^>]*>.*?</style>', '', resume_content, flags=re.DOTALL | re.IGNORECASE)
+    lines = content.strip().split('\n')
 
-    # First line should be # Name
-    for line in lines[:5]:
+    # Look for # Name pattern anywhere in first 50 lines
+    for line in lines[:50]:
         line = line.strip()
+        # Skip empty lines and HTML tags
+        if not line or (line.startswith('<') and '#' not in line):
+            continue
+
+        # Check for markdown header with name
         if line.startswith('#') and not line.startswith('##'):
             name = line.lstrip('#').strip()
+            # Remove any trailing HTML tags
+            name = re.sub(r'<[^>]+>', '', name).strip()
             parts = name.split()
             if len(parts) >= 2:
                 info['first_name'] = parts[0]
                 info['last_name'] = ' '.join(parts[1:])
+                log.debug(f"Extracted name from header: {info['first_name']} {info['last_name']}")
             elif len(parts) == 1:
                 info['first_name'] = parts[0]
+                log.debug(f"Extracted first name from header: {info['first_name']}")
             break
 
+    # If no name found yet, try to find from email
+    if not info['first_name']:
+        for line in lines[:50]:
+            email_match = re.search(r'([\w\.-]+)@[\w\.-]+\.\w+', line)
+            if email_match:
+                email_prefix = email_match.group(1)
+                # Try to extract name from email like demian.vladi or demian_vladi
+                parts = re.split(r'[._]', email_prefix)
+                if len(parts) >= 2:
+                    info['first_name'] = parts[0].capitalize()
+                    info['last_name'] = parts[1].capitalize()
+                    log.debug(f"Extracted name from email: {info['first_name']} {info['last_name']}")
+                elif len(parts) == 1 and parts[0]:
+                    info['first_name'] = parts[0].capitalize()
+                    log.debug(f"Extracted first name from email: {info['first_name']}")
+                break
+
     # Look for contact info line (email, phone)
-    for line in lines[:10]:
+    for line in lines[:50]:
         line = line.strip()
         # Skip header lines
         if line.startswith('#'):
@@ -157,12 +206,7 @@ def save_application_documents(job_id: int, resume_md: str, cover_letter_md: str
         log.debug(f"Extracted: {first_name} {last_name}")
 
     # Create folder name: Company_ID
-    if company:
-        # Sanitize company name for folder
-        safe_company = re.sub(r'[^\w\s-]', '', company).strip().replace(' ', '_')
-        folder_name = f"{safe_company}_{job_id}"
-    else:
-        folder_name = str(job_id)
+    folder_name = get_application_folder_name(company, job_id)
 
     job_dir = os.path.join(base_dir, folder_name)
     os.makedirs(job_dir, exist_ok=True)
@@ -175,6 +219,11 @@ def save_application_documents(job_id: int, resume_md: str, cover_letter_md: str
 
     # Sanitize file base name
     file_base = re.sub(r'[^\w\s-]', '', file_base).strip().replace(' ', '_')
+
+    # Fallback if file_base is empty
+    if not file_base:
+        log.warning("Could not extract applicant name, using 'Resume' as default")
+        file_base = 'Resume'
 
     paths = {}
 
@@ -225,6 +274,17 @@ def save_application_documents(job_id: int, resume_md: str, cover_letter_md: str
         if paths.get('cover_letter_md'):
             shutil.copy2(paths['cover_letter_md'], resume_copy_dir)
         log.debug(f"Copied {len([p for p in paths.values() if p])} files to resume directory")
+
+    # Clean up temporary Claude CLI files
+    temp_files = ['resume.md', 'tailored_resume.md', 'description.md', 'prompt.txt']
+    for temp_file in temp_files:
+        temp_path = os.path.join(job_dir, temp_file)
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                log.debug(f"Cleaned up temp file: {temp_file}")
+            except OSError as e:
+                log.warning(f"Could not remove temp file {temp_file}: {e}")
 
     log.info(f"Saved documents: {list(paths.keys())}")
     return paths

@@ -38,6 +38,7 @@ def parse_job_description(description: str, title: str = '', location: str = '')
         'extracted_location': None,
         'cleaned_description': None,
         'posted_at': None,
+        'hiring_manager': None,
         'source_format': 'generic'
     }
 
@@ -53,6 +54,7 @@ def parse_job_description(description: str, title: str = '', location: str = '')
         result['extracted_location'] = linkedin_data.get('location')
         result['cleaned_description'] = linkedin_data.get('cleaned_description')
         result['posted_at'] = linkedin_data.get('posted_at')
+        result['hiring_manager'] = linkedin_data.get('hiring_manager')
         if linkedin_data.get('is_remote') is not None:
             result['is_remote'] = linkedin_data.get('is_remote')
 
@@ -128,7 +130,8 @@ def parse_linkedin_header(text: str) -> Dict:
         'location': None,
         'is_remote': None,
         'cleaned_description': None,
-        'posted_at': None
+        'posted_at': None,
+        'hiring_manager': None
     }
 
     # Split into header (before "About the job") and body
@@ -246,6 +249,12 @@ def parse_linkedin_header(text: str) -> Dict:
     # Also check if location contains "(Remote)"
     if result['location'] and '(remote)' in result['location'].lower():
         result['is_remote'] = True
+
+    # Extract hiring manager from "Meet the hiring team" section
+    hiring_match = re.search(r'Meet the hiring team\s*\n+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text)
+    if hiring_match:
+        result['hiring_manager'] = hiring_match.group(1).strip()
+        log.debug(f"Extracted hiring manager: {result['hiring_manager']}")
 
     return result
 

@@ -39,8 +39,19 @@ if not exist "node_modules\md-to-pdf" (
     )
 )
 
+REM Check if Claude CLI is available
+where claude >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: Claude CLI not found
+    echo AI features will only work with API keys ^(Claude API or OpenAI^)
+    echo To use Claude CLI, install it from: https://docs.anthropic.com/claude-code
+    echo.
+) else (
+    echo Claude CLI found - local AI generation available
+)
+
 REM Run the app
 echo Starting JASS...
-python app.py
+python app.py %*
 
 pause

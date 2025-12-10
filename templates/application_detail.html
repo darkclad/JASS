@@ -182,102 +182,23 @@
 
     <!-- Sidebar -->
     <div class="col-lg-4">
-        {% if application.status != 'applied' %}
-        <!-- Applicant Info (only for non-applied) -->
+        <!-- Status -->
         <div class="card mb-4">
             <div class="card-header">
-                <i class="bi bi-person"></i> Applicant Info
+                <i class="bi bi-flag"></i> Status
             </div>
             <div class="card-body">
-                <form action="{{ url_for('update_applicant_info', id=application.id) }}" method="POST">
-                    <div class="mb-2">
-                        <label class="form-label small">First Name</label>
-                        <input type="text" name="first_name" class="form-control form-control-sm"
-                               value="{{ application.first_name or '' }}">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label small">Last Name</label>
-                        <input type="text" name="last_name" class="form-control form-control-sm"
-                               value="{{ application.last_name or '' }}">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label small">Email</label>
-                        <input type="email" name="email" class="form-control form-control-sm"
-                               value="{{ application.email or '' }}">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label small">Phone</label>
-                        <input type="text" name="phone" class="form-control form-control-sm"
-                               value="{{ application.phone or '' }}">
-                    </div>
-                    <button type="submit" class="btn btn-sm btn-outline-primary w-100">
-                        Update Info
-                    </button>
-                </form>
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- Actions -->
-        <div class="card mb-4">
-            <div class="card-header">
-                <i class="bi bi-lightning"></i> Actions
-            </div>
-            <div class="card-body">
-                <!-- View Job link -->
-                <a href="{{ url_for('job_detail', id=application.job.id) }}" class="btn btn-outline-info w-100 mb-2">
-                    <i class="bi bi-briefcase"></i> View Job Details
-                </a>
-
-                {% if application.job.url %}
-                <a href="{{ application.job.url }}" target="_blank" class="btn btn-outline-primary w-100 mb-2">
-                    <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
-                </a>
-                {% endif %}
-
-                {% if application.status != 'applied' %}
-                <form action="{{ url_for('mark_application_applied', id=application.id) }}" method="POST">
-                    <button type="submit" class="btn btn-success w-100 mb-2">
-                        <i class="bi bi-check2-circle"></i> Mark as Applied
-                    </button>
-                </form>
-
-                <form action="{{ url_for('tailor_job', id=application.job.id) }}" method="POST" id="regenForm">
-                    <button type="submit" class="btn btn-outline-secondary w-100 mb-2" id="regenBtn"
-                            onclick="return confirm('This will regenerate all documents. Continue?')">
-                        <span class="btn-text"><i class="bi bi-arrow-clockwise"></i> Regenerate with AI</span>
-                        <span class="spinner-border" role="status"></span>
-                    </button>
-                </form>
+                {% if application.status == 'applied' and application.applied_at %}
+                <p class="mb-0">Applied on {{ application.applied_at.strftime('%Y-%m-%d %H:%M') }}</p>
+                {% elif application.status == 'ready' %}
+                <p class="mb-0">Ready</p>
                 {% else %}
-                <div class="alert alert-success mb-2 py-2 text-center">
-                    <i class="bi bi-check2-circle"></i> Applied
-                    {% if application.applied_at %}
-                    <br><small>{{ application.applied_at.strftime('%Y-%m-%d %H:%M') }}</small>
-                    {% endif %}
-                </div>
+                <p class="mb-0">Created on {{ application.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
                 {% endif %}
-
-                <hr>
-
-                <div class="d-grid gap-2">
-                    {% if application.resume_pdf %}
-                    <a href="{{ url_for('download_document', id=application.id, doc_type='resume_pdf') }}"
-                       class="btn btn-success">
-                        <i class="bi bi-download"></i> Download Resume PDF
-                    </a>
-                    {% endif %}
-                    {% if application.cover_letter_pdf %}
-                    <a href="{{ url_for('download_document', id=application.id, doc_type='cover_letter_pdf') }}"
-                       class="btn btn-success">
-                        <i class="bi bi-download"></i> Download Cover Letter PDF
-                    </a>
-                    {% endif %}
-                </div>
             </div>
         </div>
 
-        <!-- Metadata -->
+        <!-- Details -->
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-info-circle"></i> Details
@@ -286,7 +207,51 @@
                 <p class="mb-1"><strong>AI Provider:</strong> {{ application.ai_provider or '-' }}</p>
                 <p class="mb-1"><strong>Model:</strong> {{ application.ai_model or '-' }}</p>
                 <p class="mb-1"><strong>Generated:</strong> {{ application.tailored_at.strftime('%Y-%m-%d %H:%M') if application.tailored_at else '-' }}</p>
-                <p class="mb-0"><strong>Status:</strong> {{ application.status }}</p>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-lightning"></i> Actions
+            </div>
+            <div class="card-body">
+                {% if application.status != 'applied' %}
+                <button type="button" class="btn btn-success w-100 mb-2" id="regenBtn"
+                        data-tailor-url="{{ url_for('tailor_job_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-arrow-clockwise"></i> Regenerate with AI</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                {% endif %}
+
+                <a href="{{ url_for('download_document', id=application.id, doc_type='resume_pdf') }}"
+                   class="btn btn-success w-100 mb-2">
+                    <i class="bi bi-download"></i> Download Resume PDF
+                </a>
+
+                <a href="{{ url_for('download_document', id=application.id, doc_type='cover_letter_pdf') }}"
+                   class="btn btn-success w-100 mb-2">
+                    <i class="bi bi-download"></i> Download Cover Letter PDF
+                </a>
+
+                {% if application.status != 'applied' %}
+                <form action="{{ url_for('mark_application_applied', id=application.id) }}" method="POST">
+                    <button type="submit" class="btn btn-success w-100 mb-2">
+                        <i class="bi bi-check2-circle"></i> Mark as Applied
+                    </button>
+                </form>
+                {% endif %}
+
+                <a href="{{ url_for('job_detail', id=application.job.id) }}" class="btn btn-success w-100 mb-2">
+                    <i class="bi bi-briefcase"></i> View Job Details
+                </a>
+
+                {% if application.job.url %}
+                <a href="{{ application.job.url }}" target="_blank" class="btn btn-success w-100 mb-2">
+                    <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
+                </a>
+                {% endif %}
             </div>
         </div>
 
@@ -314,10 +279,64 @@ document.getElementById('saveForm')?.addEventListener('submit', function() {
     setLoading(document.getElementById('saveBtn'), true);
 });
 
-document.getElementById('regenForm')?.addEventListener('submit', function(e) {
-    // Only set loading if confirm was accepted
-    if (e.defaultPrevented) return;
-    setLoading(document.getElementById('regenBtn'), true);
+document.getElementById('regenBtn')?.addEventListener('click', function() {
+    if (!confirm('This will regenerate all documents. Continue?')) return;
+
+    const btn = this;
+    const url = btn.dataset.tailorUrl;
+    const btnText = btn.querySelector('.btn-text');
+    const btnStatus = btn.querySelector('.btn-status');
+    const spinner = btn.querySelector('.spinner-border');
+
+    // Show loading state with status text
+    btn.disabled = true;
+    btn.classList.add('loading');
+    document.body.classList.add('loading');
+    btnText.style.display = 'none';
+    btnStatus.style.display = 'inline';
+    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> Starting...';
+    spinner.style.display = 'inline-block';
+
+    // Connect to SSE endpoint
+    const eventSource = new EventSource(url);
+
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        if (data.error) {
+            eventSource.close();
+            alert('Error: ' + data.error);
+            // Reset button
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            document.body.classList.remove('loading');
+            btnText.style.display = 'inline';
+            btnStatus.style.display = 'none';
+            spinner.style.display = 'none';
+            return;
+        }
+
+        if (data.status) {
+            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + data.status;
+        }
+
+        if (data.redirect) {
+            eventSource.close();
+            window.location.href = data.redirect;
+        }
+    };
+
+    eventSource.onerror = function() {
+        eventSource.close();
+        alert('Connection lost. Please try again.');
+        // Reset button
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        document.body.classList.remove('loading');
+        btnText.style.display = 'inline';
+        btnStatus.style.display = 'none';
+        spinner.style.display = 'none';
+    };
 });
 </script>
 {% endblock %}

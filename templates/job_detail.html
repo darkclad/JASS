@@ -122,9 +122,40 @@
         </div>
     </div>
 
-    <!-- Actions Panel -->
+    <!-- Sidebar -->
     <div class="col-lg-4">
-        <!-- Generate Documents -->
+        <!-- Status -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-flag"></i> Status
+            </div>
+            <div class="card-body">
+                {% if job.status == 'applied' and job.applied_at %}
+                <p class="mb-0">Applied on {{ job.applied_at.strftime('%Y-%m-%d') }}</p>
+                {% elif job.status == 'ready' %}
+                <p class="mb-0">Ready</p>
+                {% else %}
+                <p class="mb-0">Saved on {{ job.created_at.strftime('%Y-%m-%d') }}</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Details -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-info-circle"></i> Details
+            </div>
+            <div class="card-body small">
+                <p class="mb-1"><strong>Source:</strong> {{ job.source|title if job.source else '-' }}</p>
+                <p class="mb-1"><strong>Added:</strong> {{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+                {% if job.posted_at %}
+                <p class="mb-1"><strong>Posted:</strong> {{ job.posted_at.strftime('%Y-%m-%d') }}</p>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if not (job.application and job.application.status == 'applied') %}
+        <!-- AI Tailoring (hide for applied applications) -->
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-magic"></i> AI Tailoring
@@ -135,10 +166,10 @@
                     <i class="bi bi-exclamation-triangle"></i>
                     No master resume found. <a href="{{ url_for('resume') }}">Create one first</a>.
                 </div>
-                {% elif not ai_config or not ai_config.api_key %}
+                {% elif not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) %}
                 <div class="alert alert-warning mb-3">
                     <i class="bi bi-exclamation-triangle"></i>
-                    AI not configured. <a href="{{ url_for('settings') }}">Configure API key</a>.
+                    AI not configured. <a href="{{ url_for('settings') }}">Configure AI settings</a>.
                 </div>
                 {% else %}
                 <p class="small text-muted">
@@ -147,31 +178,31 @@
                 </p>
                 {% endif %}
 
-                <form action="{{ url_for('tailor_job', id=job.id) }}" method="POST" id="tailorForm">
-                    <button type="submit" class="btn btn-primary w-100" id="tailorBtn"
-                            {% if not master_resume or not ai_config or not ai_config.api_key %}disabled{% endif %}>
-                        <span class="btn-text"><i class="bi bi-magic"></i> Generate Tailored Resume & Cover Letter</span>
-                        <span class="spinner-border" role="status"></span>
-                    </button>
-                </form>
-
-                {% if job.application %}
-                <hr>
-                <a href="{{ url_for('application_detail', id=job.application.id) }}" class="btn btn-success w-100">
-                    <i class="bi bi-file-earmark-check"></i> View Application
-                </a>
-                {% endif %}
+                <button type="button" class="btn btn-primary w-100" id="tailorBtn"
+                        {% if not master_resume or not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) %}disabled{% endif %}
+                        data-tailor-url="{{ url_for('tailor_job_stream', id=job.id) }}">
+                    <span class="btn-text"><i class="bi bi-magic"></i> Generate Tailored Resume & Cover Letter</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
             </div>
         </div>
+        {% endif %}
 
-        <!-- Quick Actions -->
-        <div class="card">
+        <!-- Actions -->
+        <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-lightning"></i> Actions
             </div>
             <div class="card-body">
+                {% if job.application %}
+                <a href="{{ url_for('application_detail', id=job.application.id) }}" class="btn btn-success w-100 mb-2">
+                    <i class="bi bi-file-earmark-check"></i> View Application
+                </a>
+                {% endif %}
+
                 {% if job.url %}
-                <a href="{{ job.url }}" target="_blank" class="btn btn-outline-primary w-100 mb-2">
+                <a href="{{ job.url }}" target="_blank" class="btn btn-success w-100 mb-2">
                     <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
                 </a>
                 {% endif %}
@@ -182,15 +213,16 @@
                         <i class="bi bi-check2-circle"></i> Mark as Applied
                     </button>
                 </form>
-                {% else %}
-                <div class="alert alert-success mb-2 py-2 text-center">
-                    <i class="bi bi-check2-circle"></i> Applied
-                    {% if job.applied_at %}
-                    <br><small>{{ job.applied_at.strftime('%Y-%m-%d') }}</small>
-                    {% endif %}
-                </div>
                 {% endif %}
+            </div>
+        </div>
 
+        <!-- Danger Zone -->
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <i class="bi bi-exclamation-triangle"></i> Danger Zone
+            </div>
+            <div class="card-body">
                 <form action="{{ url_for('delete_job', id=job.id) }}" method="POST"
                       onsubmit="return confirm('Delete this job?')">
                     <button type="submit" class="btn btn-outline-danger w-100">
@@ -205,9 +237,62 @@
 
 {% block extra_js %}
 <script>
-document.getElementById('tailorForm')?.addEventListener('submit', function() {
-    const btn = document.getElementById('tailorBtn');
-    setLoading(btn, true);
+document.getElementById('tailorBtn')?.addEventListener('click', function() {
+    const btn = this;
+    const url = btn.dataset.tailorUrl;
+    const btnText = btn.querySelector('.btn-text');
+    const btnStatus = btn.querySelector('.btn-status');
+    const spinner = btn.querySelector('.spinner-border');
+
+    // Show loading state with status text
+    btn.disabled = true;
+    btn.classList.add('loading');
+    document.body.classList.add('loading');
+    btnText.style.display = 'none';
+    btnStatus.style.display = 'inline';
+    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> Starting...';
+    spinner.style.display = 'inline-block';
+
+    // Connect to SSE endpoint
+    const eventSource = new EventSource(url);
+
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        if (data.error) {
+            eventSource.close();
+            alert('Error: ' + data.error);
+            // Reset button
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            document.body.classList.remove('loading');
+            btnText.style.display = 'inline';
+            btnStatus.style.display = 'none';
+            spinner.style.display = 'none';
+            return;
+        }
+
+        if (data.status) {
+            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + data.status;
+        }
+
+        if (data.redirect) {
+            eventSource.close();
+            window.location.href = data.redirect;
+        }
+    };
+
+    eventSource.onerror = function() {
+        eventSource.close();
+        alert('Connection lost. Please try again.');
+        // Reset button
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        document.body.classList.remove('loading');
+        btnText.style.display = 'inline';
+        btnStatus.style.display = 'none';
+        spinner.style.display = 'none';
+    };
 });
 </script>
 {% endblock %}

@@ -41,6 +41,7 @@ class Job(db.Model):
     is_remote = db.Column(db.Boolean)
     experience_years = db.Column(db.String(50))  # e.g., "5+", "3-5"
     skills = db.Column(db.Text)  # JSON list of required skills
+    hiring_manager = db.Column(db.String(200))  # Hiring manager name from LinkedIn
 
     # Status tracking
     status = db.Column(db.String(50), default='new')
