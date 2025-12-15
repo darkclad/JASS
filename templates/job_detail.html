@@ -178,10 +178,18 @@
                 </p>
                 {% endif %}
 
-                <button type="button" class="btn btn-primary w-100" id="tailorBtn"
+                <button type="button" class="btn btn-primary w-100 mb-2" id="tailorResumeBtn"
                         {% if not master_resume or not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) %}disabled{% endif %}
-                        data-tailor-url="{{ url_for('tailor_job_stream', id=job.id) }}">
-                    <span class="btn-text"><i class="bi bi-magic"></i> Generate Tailored Resume & Cover Letter</span>
+                        data-tailor-url="{{ url_for('tailor_resume_stream', id=job.id) }}">
+                    <span class="btn-text"><i class="bi bi-file-person"></i> Generate Tailored Resume</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                <button type="button" class="btn btn-primary w-100" id="tailorCoverLetterBtn"
+                        {% if not master_resume or not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) or not job.application or not job.application.resume_md %}disabled{% endif %}
+                        data-tailor-url="{{ url_for('tailor_cover_letter_stream', id=job.id) }}"
+                        {% if not job.application or not job.application.resume_md %}title="Generate a resume first"{% endif %}>
+                    <span class="btn-text"><i class="bi bi-envelope"></i> Generate Cover Letter</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
@@ -237,44 +245,79 @@
 
 {% block extra_js %}
 <script>
-document.getElementById('tailorBtn')?.addEventListener('click', function() {
-    const btn = this;
-    const url = btn.dataset.tailorUrl;
-    const btnText = btn.querySelector('.btn-text');
-    const btnStatus = btn.querySelector('.btn-status');
-    const spinner = btn.querySelector('.spinner-border');
+function setupTailorButton(btnId) {
+    document.getElementById(btnId)?.addEventListener('click', function() {
+        const btn = this;
+        const url = btn.dataset.tailorUrl;
+        const btnText = btn.querySelector('.btn-text');
+        const btnStatus = btn.querySelector('.btn-status');
+        const spinner = btn.querySelector('.spinner-border');
 
-    // Show loading state with status text
-    btn.disabled = true;
-    btn.classList.add('loading');
-    document.body.classList.add('loading');
-    btnText.style.display = 'none';
-    btnStatus.style.display = 'inline';
-    spinner.style.display = 'inline-block';
+        // Show loading state with status text
+        btn.disabled = true;
+        btn.classList.add('loading');
+        document.body.classList.add('loading');
+        btnText.style.display = 'none';
+        btnStatus.style.display = 'inline';
+        spinner.style.display = 'inline-block';
 
-    // Start timer (resets on each stage)
-    let stageStartTime = Date.now();
-    let currentStatus = 'Starting...';
-    let timerInterval;
+        // Disable the other button too
+        const otherBtn = btnId === 'tailorResumeBtn'
+            ? document.getElementById('tailorCoverLetterBtn')
+            : document.getElementById('tailorResumeBtn');
+        if (otherBtn) otherBtn.disabled = true;
 
-    function updateStatus() {
-        const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
-        btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
-    }
+        // Start timer (resets on each stage)
+        let stageStartTime = Date.now();
+        let currentStatus = 'Starting...';
+        let timerInterval;
 
-    updateStatus();
-    timerInterval = setInterval(updateStatus, 1000);
+        function updateStatus() {
+            const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
+            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+        }
 
-    // Connect to SSE endpoint
-    const eventSource = new EventSource(url);
+        updateStatus();
+        timerInterval = setInterval(updateStatus, 1000);
 
-    eventSource.onmessage = function(event) {
-        const data = JSON.parse(event.data);
+        // Connect to SSE endpoint
+        const eventSource = new EventSource(url);
 
-        if (data.error) {
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.error) {
+                clearInterval(timerInterval);
+                eventSource.close();
+                alert('Error: ' + data.error);
+                // Reset button
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                document.body.classList.remove('loading');
+                btnText.style.display = 'inline';
+                btnStatus.style.display = 'none';
+                spinner.style.display = 'none';
+                if (otherBtn && !otherBtn.hasAttribute('title')) otherBtn.disabled = false;
+                return;
+            }
+
+            if (data.status) {
+                currentStatus = data.status;
+                stageStartTime = Date.now();  // Reset timer for new stage
+                updateStatus();
+            }
+
+            if (data.redirect) {
+                clearInterval(timerInterval);
+                eventSource.close();
+                window.location.href = data.redirect;
+            }
+        };
+
+        eventSource.onerror = function() {
             clearInterval(timerInterval);
             eventSource.close();
-            alert('Error: ' + data.error);
+            alert('Connection lost. Please try again.');
             // Reset button
             btn.disabled = false;
             btn.classList.remove('loading');
@@ -282,34 +325,12 @@ document.getElementById('tailorBtn')?.addEventListener('click', function() {
             btnText.style.display = 'inline';
             btnStatus.style.display = 'none';
             spinner.style.display = 'none';
-            return;
-        }
+            if (otherBtn && !otherBtn.hasAttribute('title')) otherBtn.disabled = false;
+        };
+    });
+}
 
-        if (data.status) {
-            currentStatus = data.status;
-            stageStartTime = Date.now();  // Reset timer for new stage
-            updateStatus();
-        }
-
-        if (data.redirect) {
-            clearInterval(timerInterval);
-            eventSource.close();
-            window.location.href = data.redirect;
-        }
-    };
-
-    eventSource.onerror = function() {
-        clearInterval(timerInterval);
-        eventSource.close();
-        alert('Connection lost. Please try again.');
-        // Reset button
-        btn.disabled = false;
-        btn.classList.remove('loading');
-        document.body.classList.remove('loading');
-        btnText.style.display = 'inline';
-        btnStatus.style.display = 'none';
-        spinner.style.display = 'none';
-    };
-});
+setupTailorButton('tailorResumeBtn');
+setupTailorButton('tailorCoverLetterBtn');
 </script>
 {% endblock %}

@@ -295,6 +295,185 @@ def save_application_documents(job_id: int, resume_md: str, cover_letter_md: str
     return paths
 
 
+def save_resume_document(job_id: int, resume_md: str, base_dir: str, company: str = None,
+                          first_name: str = None, last_name: str = None,
+                          script_dir: str = None) -> dict:
+    """
+    Save only the resume document (MD and PDF) for a job.
+
+    Args:
+        job_id: Job ID for folder naming
+        resume_md: Resume in Markdown
+        base_dir: Base directory for applications
+        company: Company name for folder naming
+        first_name: Applicant first name for file naming
+        last_name: Applicant last name for file naming
+        script_dir: Directory where Jass is located (for resume copy)
+
+    Returns:
+        Dictionary with file paths
+    """
+    log.info(f"Saving resume document for job {job_id} at {company}")
+
+    # Extract applicant info if not provided
+    if not first_name or not last_name:
+        log.debug("Extracting applicant info from resume")
+        info = extract_applicant_info(resume_md)
+        first_name = first_name or info.get('first_name', 'Resume')
+        last_name = last_name or info.get('last_name', '')
+        log.debug(f"Extracted: {first_name} {last_name}")
+
+    # Create folder name: Company_ID
+    folder_name = get_application_folder_name(company, job_id)
+
+    job_dir = os.path.join(base_dir, folder_name)
+    os.makedirs(job_dir, exist_ok=True)
+
+    # Create file base name: FirstName_LastName
+    if last_name:
+        file_base = f"{first_name}_{last_name}"
+    else:
+        file_base = first_name
+
+    # Sanitize file base name
+    file_base = re.sub(r'[^\w\s-]', '', file_base).strip().replace(' ', '_')
+
+    # Fallback if file_base is empty
+    if not file_base:
+        log.warning("Could not extract applicant name, using 'Resume' as default")
+        file_base = 'Resume'
+
+    paths = {}
+
+    # Save resume
+    resume_md_path = os.path.join(job_dir, f'{file_base}.md')
+    resume_pdf_path = os.path.join(job_dir, f'{file_base}.pdf')
+
+    log.debug(f"Saving resume markdown to {resume_md_path}")
+    with open(resume_md_path, 'w', encoding='utf-8') as f:
+        f.write(resume_md)
+    paths['resume_md'] = resume_md_path
+
+    if generate_pdf(resume_md, resume_pdf_path, 'resume'):
+        paths['resume_pdf'] = resume_pdf_path
+
+    # Copy to Jass/resume directory
+    if script_dir:
+        resume_copy_dir = os.path.join(script_dir, 'resume')
+        log.info(f"Copying resume to {resume_copy_dir}")
+        os.makedirs(resume_copy_dir, exist_ok=True)
+
+        # Clear existing resume files in resume directory (not cover letters)
+        for f in os.listdir(resume_copy_dir):
+            fpath = os.path.join(resume_copy_dir, f)
+            if os.path.isfile(fpath) and '_cover' not in f:
+                os.remove(fpath)
+
+        # Copy new resume files
+        if paths.get('resume_pdf'):
+            shutil.copy2(paths['resume_pdf'], resume_copy_dir)
+        if paths.get('resume_md'):
+            shutil.copy2(paths['resume_md'], resume_copy_dir)
+
+    # Clean up temporary Claude CLI files
+    temp_files = ['resume.md', 'tailored_resume.md', 'description.md', 'prompt.txt']
+    for temp_file in temp_files:
+        temp_path = os.path.join(job_dir, temp_file)
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                log.debug(f"Cleaned up temp file: {temp_file}")
+            except OSError as e:
+                log.warning(f"Could not remove temp file {temp_file}: {e}")
+
+    log.info(f"Saved resume documents: {list(paths.keys())}")
+    return paths
+
+
+def save_cover_letter_document(job_id: int, cover_letter_md: str, base_dir: str,
+                                company: str = None, first_name: str = None,
+                                last_name: str = None, script_dir: str = None) -> dict:
+    """
+    Save only the cover letter document (MD and PDF) for a job.
+
+    Args:
+        job_id: Job ID for folder naming
+        cover_letter_md: Cover letter in Markdown
+        base_dir: Base directory for applications
+        company: Company name for folder naming
+        first_name: Applicant first name for file naming
+        last_name: Applicant last name for file naming
+        script_dir: Directory where Jass is located (for cover letter copy)
+
+    Returns:
+        Dictionary with file paths
+    """
+    log.info(f"Saving cover letter document for job {job_id} at {company}")
+
+    # Create folder name: Company_ID
+    folder_name = get_application_folder_name(company, job_id)
+
+    job_dir = os.path.join(base_dir, folder_name)
+    os.makedirs(job_dir, exist_ok=True)
+
+    # Create file base name: FirstName_LastName
+    if first_name and last_name:
+        file_base = f"{first_name}_{last_name}"
+    elif first_name:
+        file_base = first_name
+    else:
+        file_base = 'Resume'
+
+    # Sanitize file base name
+    file_base = re.sub(r'[^\w\s-]', '', file_base).strip().replace(' ', '_')
+
+    paths = {}
+
+    # Save cover letter
+    cl_md_path = os.path.join(job_dir, f'{file_base}_cover.md')
+    cl_pdf_path = os.path.join(job_dir, f'{file_base}_cover.pdf')
+
+    log.debug(f"Saving cover letter markdown to {cl_md_path}")
+    with open(cl_md_path, 'w', encoding='utf-8') as f:
+        f.write(cover_letter_md)
+    paths['cover_letter_md'] = cl_md_path
+
+    if generate_pdf(cover_letter_md, cl_pdf_path, 'cover_letter'):
+        paths['cover_letter_pdf'] = cl_pdf_path
+
+    # Copy to Jass/resume directory
+    if script_dir:
+        resume_copy_dir = os.path.join(script_dir, 'resume')
+        log.info(f"Copying cover letter to {resume_copy_dir}")
+        os.makedirs(resume_copy_dir, exist_ok=True)
+
+        # Clear existing cover letter files in resume directory
+        for f in os.listdir(resume_copy_dir):
+            fpath = os.path.join(resume_copy_dir, f)
+            if os.path.isfile(fpath) and '_cover' in f:
+                os.remove(fpath)
+
+        # Copy new cover letter files
+        if paths.get('cover_letter_pdf'):
+            shutil.copy2(paths['cover_letter_pdf'], resume_copy_dir)
+        if paths.get('cover_letter_md'):
+            shutil.copy2(paths['cover_letter_md'], resume_copy_dir)
+
+    # Clean up temporary Claude CLI files for cover letter
+    temp_files = ['cover_letter.md', 'prompt.txt']
+    for temp_file in temp_files:
+        temp_path = os.path.join(job_dir, temp_file)
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                log.debug(f"Cleaned up temp file: {temp_file}")
+            except OSError as e:
+                log.warning(f"Could not remove temp file {temp_file}: {e}")
+
+    log.info(f"Saved cover letter documents: {list(paths.keys())}")
+    return paths
+
+
 if __name__ == '__main__':
     # Test PDF generation
     test_resume = """# John Doe

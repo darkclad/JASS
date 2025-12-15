@@ -638,6 +638,211 @@ def tailor_job_stream(id):
     return Response(generate(), mimetype='text/event-stream')
 
 
+@app.route('/jobs/<int:id>/tailor-resume-stream')
+def tailor_resume_stream(id):
+    """Generate tailored resume only with SSE progress updates."""
+    from ai_service import get_ai_provider
+    from document_gen import save_resume_document, extract_applicant_info, get_application_folder_name
+
+    def generate():
+        with app.app_context():
+            job = Job.query.get(id)
+            if not job:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                return
+
+            log.info(f"Tailoring resume for job {id}: {job.title} at {job.company}")
+
+            # Get master resume
+            master_resume = MasterResume.query.filter_by(is_default=True).first()
+            if not master_resume:
+                master_resume = MasterResume.query.first()
+
+            if not master_resume:
+                yield f"data: {json.dumps({'error': 'No master resume found'})}\n\n"
+                return
+
+            # Get AI config
+            ai_config = AIConfig.query.filter_by(is_active=True).first()
+            if not ai_config:
+                yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
+                return
+
+            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+                yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+                return
+
+            try:
+                yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
+
+                # Get custom prompts
+                resume_prompt = AppSettings.get('resume_prompt')
+                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                     resume_prompt, cover_letter_prompt)
+
+                # Get plain text description
+                from bs4 import BeautifulSoup
+                desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
+
+                # Prepare application directory
+                folder_name = get_application_folder_name(job.company, job.id)
+                app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+
+                # Generate tailored resume
+                yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
+                if ai_config.provider == 'claude-cli':
+                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
+                else:
+                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
+
+                # Save resume document
+                yield f"data: {json.dumps({'status': 'Generating PDF...'})}\n\n"
+                applicant_info = extract_applicant_info(master_resume.content)
+                jass_dir = os.path.dirname(os.path.abspath(__file__))
+
+                paths = save_resume_document(
+                    job.id, tailored_resume, Config.APPLICATIONS_DIR,
+                    company=job.company,
+                    first_name=applicant_info.get('first_name'),
+                    last_name=applicant_info.get('last_name'),
+                    script_dir=jass_dir
+                )
+
+                # Create or update application
+                application = job.application
+                if not application:
+                    application = Application(job_id=job.id)
+                    db.session.add(application)
+
+                application.resume_md = paths.get('resume_md')
+                application.resume_pdf = paths.get('resume_pdf')
+                application.ai_provider = ai_config.provider
+                application.ai_model = ai_config.model_name
+                application.tailored_at = datetime.utcnow()
+                application.status = 'ready'
+                application.first_name = applicant_info.get('first_name', '')
+                application.last_name = applicant_info.get('last_name', '')
+                application.email = applicant_info.get('email', '')
+                application.phone = applicant_info.get('phone', '')
+
+                job.status = 'ready'
+                db.session.commit()
+
+                log.info(f"Resume saved successfully for application {application.id}")
+                redirect_url = f"/applications/{application.id}"
+                yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
+
+            except Exception as e:
+                log.error(f"Error generating resume: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
+@app.route('/jobs/<int:id>/tailor-cover-letter-stream')
+def tailor_cover_letter_stream(id):
+    """Generate cover letter only with SSE progress updates (requires existing resume)."""
+    from ai_service import get_ai_provider
+    from document_gen import save_cover_letter_document, get_application_folder_name
+
+    def generate():
+        with app.app_context():
+            job = Job.query.get(id)
+            if not job:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                return
+
+            # Check for existing resume
+            application = job.application
+            if not application or not application.resume_md:
+                yield f"data: {json.dumps({'error': 'Generate a resume first'})}\n\n"
+                return
+
+            # Read the existing tailored resume
+            if not os.path.exists(application.resume_md):
+                yield f"data: {json.dumps({'error': 'Resume file not found. Please regenerate the resume.'})}\n\n"
+                return
+
+            with open(application.resume_md, 'r', encoding='utf-8') as f:
+                tailored_resume = f.read()
+
+            log.info(f"Generating cover letter for job {id}: {job.title} at {job.company}")
+
+            # Get AI config
+            ai_config = AIConfig.query.filter_by(is_active=True).first()
+            if not ai_config:
+                yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
+                return
+
+            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+                yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+                return
+
+            try:
+                yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
+
+                # Get custom prompts
+                resume_prompt = AppSettings.get('resume_prompt')
+                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                     resume_prompt, cover_letter_prompt)
+
+                # Get plain text description
+                from bs4 import BeautifulSoup
+                desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
+
+                # Prepare application directory
+                folder_name = get_application_folder_name(job.company, job.id)
+                app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+
+                # Generate cover letter
+                yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
+                if ai_config.provider == 'claude-cli':
+                    cover_letter = ai.generate_cover_letter(
+                        tailored_resume, desc_text, job.company, job.title, app_dir,
+                        job.hiring_manager
+                    )
+                else:
+                    cover_letter = ai.generate_cover_letter(
+                        tailored_resume, desc_text, job.company, job.title,
+                        job.hiring_manager
+                    )
+
+                # Save cover letter document
+                yield f"data: {json.dumps({'status': 'Generating PDF...'})}\n\n"
+                jass_dir = os.path.dirname(os.path.abspath(__file__))
+
+                paths = save_cover_letter_document(
+                    job.id, cover_letter, Config.APPLICATIONS_DIR,
+                    company=job.company,
+                    first_name=application.first_name,
+                    last_name=application.last_name,
+                    script_dir=jass_dir
+                )
+
+                # Update application
+                application.cover_letter_md = paths.get('cover_letter_md')
+                application.cover_letter_pdf = paths.get('cover_letter_pdf')
+                application.ai_provider = ai_config.provider
+                application.ai_model = ai_config.model_name
+                application.tailored_at = datetime.utcnow()
+
+                db.session.commit()
+
+                log.info(f"Cover letter saved successfully for application {application.id}")
+                redirect_url = f"/applications/{application.id}"
+                yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
+
+            except Exception as e:
+                log.error(f"Error generating cover letter: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
 # ============ Applications ============
 
 @app.route('/applications')

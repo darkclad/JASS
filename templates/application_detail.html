@@ -51,11 +51,13 @@
                     <i class="bi bi-file-person"></i> Resume
                 </button>
             </li>
+            {% if application.cover_letter_md %}
             <li class="nav-item">
                 <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cover-letter-tab" type="button">
                     <i class="bi bi-envelope"></i> Cover Letter
                 </button>
             </li>
+            {% endif %}
         </ul>
 
         <div class="tab-content">
@@ -76,6 +78,7 @@
                 </div>
             </div>
 
+            {% if application.cover_letter_md %}
             <div class="tab-pane fade" id="cover-letter-tab">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -92,6 +95,7 @@
                     </div>
                 </div>
             </div>
+            {% endif %}
         </div>
         {% else %}
         <!-- Editable view for non-applied applications -->
@@ -102,6 +106,7 @@
                         <i class="bi bi-file-person"></i> Resume
                     </button>
                 </li>
+                {% if application.cover_letter_md %}
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cover-letter-tab" type="button">
                         <i class="bi bi-envelope"></i> Cover Letter
@@ -112,6 +117,7 @@
                         <i class="bi bi-eye"></i> Preview
                     </button>
                 </li>
+                {% endif %}
             </ul>
 
             <div class="tab-content">
@@ -133,6 +139,7 @@
                     </div>
                 </div>
 
+                {% if application.cover_letter_md %}
                 <!-- Cover Letter Editor -->
                 <div class="tab-pane fade" id="cover-letter-tab">
                     <div class="card">
@@ -168,6 +175,7 @@
                         </div>
                     </div>
                 </div>
+                {% endif %}
             </div>
 
             <div class="mt-3">
@@ -217,23 +225,42 @@
             </div>
             <div class="card-body">
                 {% if application.status != 'applied' %}
-                <button type="button" class="btn btn-success w-100 mb-2" id="regenBtn"
-                        data-tailor-url="{{ url_for('tailor_job_stream', id=application.job.id) }}">
-                    <span class="btn-text"><i class="bi bi-arrow-clockwise"></i> Regenerate with AI</span>
+                <button type="button" class="btn btn-primary w-100 mb-2" id="regenResumeBtn"
+                        data-tailor-url="{{ url_for('tailor_resume_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-file-person"></i> Regenerate Resume</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                {% if application.cover_letter_md %}
+                <button type="button" class="btn btn-primary w-100 mb-2" id="regenCoverLetterBtn"
+                        data-tailor-url="{{ url_for('tailor_cover_letter_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-envelope"></i> Regenerate Cover Letter</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                {% else %}
+                <button type="button" class="btn btn-primary w-100 mb-2" id="genCoverLetterBtn"
+                        data-tailor-url="{{ url_for('tailor_cover_letter_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-envelope"></i> Generate Cover Letter</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
                 {% endif %}
+                {% endif %}
 
+                {% if application.resume_pdf %}
                 <a href="{{ url_for('download_document', id=application.id, doc_type='resume_pdf') }}"
                    class="btn btn-success w-100 mb-2">
                     <i class="bi bi-download"></i> Download Resume PDF
                 </a>
+                {% endif %}
 
+                {% if application.cover_letter_pdf %}
                 <a href="{{ url_for('download_document', id=application.id, doc_type='cover_letter_pdf') }}"
                    class="btn btn-success w-100 mb-2">
                     <i class="bi bi-download"></i> Download Cover Letter PDF
                 </a>
+                {% endif %}
 
                 {% if application.status != 'applied' %}
                 <form action="{{ url_for('mark_application_applied', id=application.id) }}" method="POST">
@@ -279,46 +306,84 @@ document.getElementById('saveForm')?.addEventListener('submit', function() {
     setLoading(document.getElementById('saveBtn'), true);
 });
 
-document.getElementById('regenBtn')?.addEventListener('click', function() {
-    if (!confirm('This will regenerate all documents. Continue?')) return;
+function setupRegenButton(btnId, confirmMsg) {
+    document.getElementById(btnId)?.addEventListener('click', function() {
+        if (!confirm(confirmMsg)) return;
 
-    const btn = this;
-    const url = btn.dataset.tailorUrl;
-    const btnText = btn.querySelector('.btn-text');
-    const btnStatus = btn.querySelector('.btn-status');
-    const spinner = btn.querySelector('.spinner-border');
+        const btn = this;
+        const url = btn.dataset.tailorUrl;
+        const btnText = btn.querySelector('.btn-text');
+        const btnStatus = btn.querySelector('.btn-status');
+        const spinner = btn.querySelector('.spinner-border');
 
-    // Show loading state with status text
-    btn.disabled = true;
-    btn.classList.add('loading');
-    document.body.classList.add('loading');
-    btnText.style.display = 'none';
-    btnStatus.style.display = 'inline';
-    spinner.style.display = 'inline-block';
+        // Show loading state with status text
+        btn.disabled = true;
+        btn.classList.add('loading');
+        document.body.classList.add('loading');
+        btnText.style.display = 'none';
+        btnStatus.style.display = 'inline';
+        spinner.style.display = 'inline-block';
 
-    // Start timer (resets on each stage)
-    let stageStartTime = Date.now();
-    let currentStatus = 'Starting...';
-    let timerInterval;
+        // Disable the other button too
+        let otherBtn;
+        if (btnId === 'regenResumeBtn') {
+            otherBtn = document.getElementById('regenCoverLetterBtn') || document.getElementById('genCoverLetterBtn');
+        } else {
+            otherBtn = document.getElementById('regenResumeBtn');
+        }
+        if (otherBtn) otherBtn.disabled = true;
 
-    function updateStatus() {
-        const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
-        btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
-    }
+        // Start timer (resets on each stage)
+        let stageStartTime = Date.now();
+        let currentStatus = 'Starting...';
+        let timerInterval;
 
-    updateStatus();
-    timerInterval = setInterval(updateStatus, 1000);
+        function updateStatus() {
+            const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
+            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+        }
 
-    // Connect to SSE endpoint
-    const eventSource = new EventSource(url);
+        updateStatus();
+        timerInterval = setInterval(updateStatus, 1000);
 
-    eventSource.onmessage = function(event) {
-        const data = JSON.parse(event.data);
+        // Connect to SSE endpoint
+        const eventSource = new EventSource(url);
 
-        if (data.error) {
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.error) {
+                clearInterval(timerInterval);
+                eventSource.close();
+                alert('Error: ' + data.error);
+                // Reset button
+                btn.disabled = false;
+                btn.classList.remove('loading');
+                document.body.classList.remove('loading');
+                btnText.style.display = 'inline';
+                btnStatus.style.display = 'none';
+                spinner.style.display = 'none';
+                if (otherBtn) otherBtn.disabled = false;
+                return;
+            }
+
+            if (data.status) {
+                currentStatus = data.status;
+                stageStartTime = Date.now();  // Reset timer for new stage
+                updateStatus();
+            }
+
+            if (data.redirect) {
+                clearInterval(timerInterval);
+                eventSource.close();
+                window.location.href = data.redirect;
+            }
+        };
+
+        eventSource.onerror = function() {
             clearInterval(timerInterval);
             eventSource.close();
-            alert('Error: ' + data.error);
+            alert('Connection lost. Please try again.');
             // Reset button
             btn.disabled = false;
             btn.classList.remove('loading');
@@ -326,34 +391,13 @@ document.getElementById('regenBtn')?.addEventListener('click', function() {
             btnText.style.display = 'inline';
             btnStatus.style.display = 'none';
             spinner.style.display = 'none';
-            return;
-        }
+            if (otherBtn) otherBtn.disabled = false;
+        };
+    });
+}
 
-        if (data.status) {
-            currentStatus = data.status;
-            stageStartTime = Date.now();  // Reset timer for new stage
-            updateStatus();
-        }
-
-        if (data.redirect) {
-            clearInterval(timerInterval);
-            eventSource.close();
-            window.location.href = data.redirect;
-        }
-    };
-
-    eventSource.onerror = function() {
-        clearInterval(timerInterval);
-        eventSource.close();
-        alert('Connection lost. Please try again.');
-        // Reset button
-        btn.disabled = false;
-        btn.classList.remove('loading');
-        document.body.classList.remove('loading');
-        btnText.style.display = 'inline';
-        btnStatus.style.display = 'none';
-        spinner.style.display = 'none';
-    };
-});
+setupRegenButton('regenResumeBtn', 'This will regenerate the resume. Continue?');
+setupRegenButton('regenCoverLetterBtn', 'This will regenerate the cover letter. Continue?');
+setupRegenButton('genCoverLetterBtn', 'Generate cover letter?');
 </script>
 {% endblock %}
