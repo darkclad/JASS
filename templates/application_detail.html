@@ -5,7 +5,7 @@
 {% block extra_css %}
 <style>
     .doc-preview {
-        max-height: 500px;
+        height: calc(100vh - 280px);
         overflow-y: auto;
         padding: 1.5rem;
         background: #fff;
@@ -15,9 +15,43 @@
     .doc-editor {
         font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
         font-size: 0.875rem;
+        height: calc(100vh - 280px) !important;
     }
     .nav-tabs .nav-link.active {
         font-weight: bold;
+    }
+    .chat-messages {
+        max-height: 300px;
+        overflow-y: auto;
+        font-size: 0.85rem;
+    }
+    .chat-message {
+        margin-bottom: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 6px;
+    }
+    .chat-message.user {
+        background: #e3f2fd;
+        margin-left: 1rem;
+    }
+    .chat-message.assistant {
+        background: #f5f5f5;
+        margin-right: 1rem;
+    }
+    .chat-message .role {
+        font-weight: bold;
+        font-size: 0.75rem;
+        color: #666;
+    }
+    .chat-message pre {
+        background: #fff;
+        padding: 0.5rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        overflow-x: auto;
+    }
+    #chatInput {
+        resize: none;
     }
 </style>
 {% endblock %}
@@ -47,7 +81,12 @@
         <!-- Read-only view for applied applications -->
         <ul class="nav nav-tabs mb-3" role="tablist">
             <li class="nav-item">
-                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#job-desc-tab" type="button">
+                    <i class="bi bi-briefcase"></i> Job Description
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
                     <i class="bi bi-file-person"></i> Resume
                 </button>
             </li>
@@ -61,7 +100,16 @@
         </ul>
 
         <div class="tab-content">
-            <div class="tab-pane fade show active" id="resume-tab">
+            <div class="tab-pane fade show active" id="job-desc-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <span>Job Description</span>
+                    </div>
+                    <div class="card-body doc-preview" style="white-space: pre-wrap;">{{ application.job.description or 'No description available.' }}</div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="resume-tab">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <span>Resume</span>
@@ -102,7 +150,12 @@
         <form action="{{ url_for('update_application', id=application.id) }}" method="POST" id="saveForm">
             <ul class="nav nav-tabs mb-3" role="tablist">
                 <li class="nav-item">
-                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
+                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#job-desc-tab" type="button">
+                        <i class="bi bi-briefcase"></i> Job Description
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#resume-tab" type="button">
                         <i class="bi bi-file-person"></i> Resume
                     </button>
                 </li>
@@ -121,8 +174,18 @@
             </ul>
 
             <div class="tab-content">
+                <!-- Job Description (read-only reference) -->
+                <div class="tab-pane fade show active" id="job-desc-tab">
+                    <div class="card">
+                        <div class="card-header">
+                            <span>Job Description</span>
+                        </div>
+                        <div class="card-body doc-preview" style="white-space: pre-wrap;">{{ application.job.description or 'No description available.' }}</div>
+                    </div>
+                </div>
+
                 <!-- Resume Editor -->
-                <div class="tab-pane fade show active" id="resume-tab">
+                <div class="tab-pane fade" id="resume-tab">
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <span>Resume (Markdown)</span>
@@ -177,13 +240,6 @@
                 </div>
                 {% endif %}
             </div>
-
-            <div class="mt-3">
-                <button type="submit" class="btn btn-primary" id="saveBtn">
-                    <span class="btn-text"><i class="bi bi-save"></i> Save Changes & Regenerate PDFs</span>
-                    <span class="spinner-border" role="status"></span>
-                </button>
-            </div>
         </form>
         {% endif %}
     </div>
@@ -218,6 +274,30 @@
             </div>
         </div>
 
+        <!-- AI Chat -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-chat-dots"></i> AI Chat
+            </div>
+            <div class="card-body">
+                <div id="chatMessages" class="chat-messages mb-2"></div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="includeJobDesc" checked>
+                    <label class="form-check-label small" for="includeJobDesc">
+                        Include job description
+                    </label>
+                </div>
+                <div class="input-group">
+                    <textarea id="chatInput" class="form-control form-control-sm" rows="3"
+                              placeholder="Ask AI... (Ctrl+Enter to send)"></textarea>
+                    <button class="btn btn-primary btn-sm" id="chatSendBtn" type="button">
+                        <i class="bi bi-send"></i>
+                    </button>
+                </div>
+                <small class="text-muted">Ctrl+Enter to send. Enter/Shift+Enter for new line.</small>
+            </div>
+        </div>
+
         <!-- Actions -->
         <div class="card mb-4">
             <div class="card-header">
@@ -225,9 +305,10 @@
             </div>
             <div class="card-body">
                 {% if application.status != 'applied' %}
+                <!-- Individual buttons -->
                 <button type="button" class="btn btn-primary w-100 mb-2" id="regenResumeBtn"
                         data-tailor-url="{{ url_for('tailor_resume_stream', id=application.job.id) }}">
-                    <span class="btn-text"><i class="bi bi-file-person"></i> Regenerate Resume</span>
+                    <span class="btn-text"><i class="bi bi-file-person"></i> Tailor Resume</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
@@ -246,38 +327,48 @@
                     <span class="spinner-border" role="status"></span>
                 </button>
                 {% endif %}
+                <!-- Combined regenerate button -->
+                <button type="button" class="btn btn-primary w-100 mb-3" id="regenBothBtn"
+                        data-tailor-url="{{ url_for('tailor_job_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-arrow-repeat"></i> Regenerate Both</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                <hr class="my-2">
                 {% endif %}
 
                 {% if application.resume_pdf %}
                 <a href="{{ url_for('download_document', id=application.id, doc_type='resume_pdf') }}"
-                   class="btn btn-success w-100 mb-2">
+                   class="btn btn-secondary w-100 mb-2">
                     <i class="bi bi-download"></i> Download Resume PDF
                 </a>
                 {% endif %}
 
                 {% if application.cover_letter_pdf %}
                 <a href="{{ url_for('download_document', id=application.id, doc_type='cover_letter_pdf') }}"
-                   class="btn btn-success w-100 mb-2">
+                   class="btn btn-secondary w-100 mb-2">
                     <i class="bi bi-download"></i> Download Cover Letter PDF
+                </a>
+                {% endif %}
+
+                <hr class="my-3">
+
+                <a href="{{ url_for('job_detail', id=application.job.id) }}" class="btn btn-light-green w-100 mb-2">
+                    <i class="bi bi-briefcase"></i> View Job Details
+                </a>
+
+                {% if application.job.url %}
+                <a href="{{ application.job.url }}" target="_blank" class="btn btn-light-green w-100 mb-2">
+                    <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
                 </a>
                 {% endif %}
 
                 {% if application.status != 'applied' %}
                 <form action="{{ url_for('mark_application_applied', id=application.id) }}" method="POST">
-                    <button type="submit" class="btn btn-success w-100 mb-2">
+                    <button type="submit" class="btn btn-success w-100 mb-2 fw-bold">
                         <i class="bi bi-check2-circle"></i> Mark as Applied
                     </button>
                 </form>
-                {% endif %}
-
-                <a href="{{ url_for('job_detail', id=application.job.id) }}" class="btn btn-success w-100 mb-2">
-                    <i class="bi bi-briefcase"></i> View Job Details
-                </a>
-
-                {% if application.job.url %}
-                <a href="{{ application.job.url }}" target="_blank" class="btn btn-success w-100 mb-2">
-                    <i class="bi bi-box-arrow-up-right"></i> Open Job Posting
-                </a>
                 {% endif %}
             </div>
         </div>
@@ -306,98 +397,102 @@ document.getElementById('saveForm')?.addEventListener('submit', function() {
     setLoading(document.getElementById('saveBtn'), true);
 });
 
-function setupRegenButton(btnId, confirmMsg) {
-    document.getElementById(btnId)?.addEventListener('click', function() {
-        if (!confirm(confirmMsg)) return;
+// Setup regeneration buttons using shared SSE handler
+const regenBtnIds = ['regenBothBtn', 'regenResumeBtn', 'regenCoverLetterBtn', 'genCoverLetterBtn'];
+setupSSEButton('regenBothBtn', regenBtnIds, 'This will regenerate both resume and cover letter. Continue?');
+setupSSEButton('regenResumeBtn', regenBtnIds, 'This will regenerate the resume. Continue?');
+setupSSEButton('regenCoverLetterBtn', regenBtnIds, 'This will regenerate the cover letter. Continue?');
+setupSSEButton('genCoverLetterBtn', regenBtnIds);  // No confirmation for first-time generation
 
-        const btn = this;
-        const url = btn.dataset.tailorUrl;
-        const btnText = btn.querySelector('.btn-text');
-        const btnStatus = btn.querySelector('.btn-status');
-        const spinner = btn.querySelector('.spinner-border');
+// AI Chat functionality
+const chatMessages = document.getElementById('chatMessages');
+const chatInput = document.getElementById('chatInput');
+const chatSendBtn = document.getElementById('chatSendBtn');
+const includeJobDesc = document.getElementById('includeJobDesc');
 
-        // Show loading state with status text
-        btn.disabled = true;
-        btn.classList.add('loading');
-        document.body.classList.add('loading');
-        btnText.style.display = 'none';
-        btnStatus.style.display = 'inline';
-        spinner.style.display = 'inline-block';
+// Store conversation history
+let conversationHistory = [];
 
-        // Disable the other button too
-        let otherBtn;
-        if (btnId === 'regenResumeBtn') {
-            otherBtn = document.getElementById('regenCoverLetterBtn') || document.getElementById('genCoverLetterBtn');
-        } else {
-            otherBtn = document.getElementById('regenResumeBtn');
-        }
-        if (otherBtn) otherBtn.disabled = true;
-
-        // Start timer (resets on each stage)
-        let stageStartTime = Date.now();
-        let currentStatus = 'Starting...';
-        let timerInterval;
-
-        function updateStatus() {
-            const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
-            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
-        }
-
-        updateStatus();
-        timerInterval = setInterval(updateStatus, 1000);
-
-        // Connect to SSE endpoint
-        const eventSource = new EventSource(url);
-
-        eventSource.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-
-            if (data.error) {
-                clearInterval(timerInterval);
-                eventSource.close();
-                alert('Error: ' + data.error);
-                // Reset button
-                btn.disabled = false;
-                btn.classList.remove('loading');
-                document.body.classList.remove('loading');
-                btnText.style.display = 'inline';
-                btnStatus.style.display = 'none';
-                spinner.style.display = 'none';
-                if (otherBtn) otherBtn.disabled = false;
-                return;
-            }
-
-            if (data.status) {
-                currentStatus = data.status;
-                stageStartTime = Date.now();  // Reset timer for new stage
-                updateStatus();
-            }
-
-            if (data.redirect) {
-                clearInterval(timerInterval);
-                eventSource.close();
-                window.location.href = data.redirect;
-            }
-        };
-
-        eventSource.onerror = function() {
-            clearInterval(timerInterval);
-            eventSource.close();
-            alert('Connection lost. Please try again.');
-            // Reset button
-            btn.disabled = false;
-            btn.classList.remove('loading');
-            document.body.classList.remove('loading');
-            btnText.style.display = 'inline';
-            btnStatus.style.display = 'none';
-            spinner.style.display = 'none';
-            if (otherBtn) otherBtn.disabled = false;
-        };
-    });
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
-setupRegenButton('regenResumeBtn', 'This will regenerate the resume. Continue?');
-setupRegenButton('regenCoverLetterBtn', 'This will regenerate the cover letter. Continue?');
-setupRegenButton('genCoverLetterBtn', 'Generate cover letter?');
+function formatMessage(text) {
+    // Simple markdown-like formatting
+    // Code blocks
+    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Inline code
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Newlines
+    text = text.replace(/\n/g, '<br>');
+    return text;
+}
+
+function addMessageToUI(role, content) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${role}`;
+    msgDiv.innerHTML = `
+        <div class="role">${role === 'user' ? 'You' : 'AI'}</div>
+        <div class="content">${formatMessage(escapeHtml(content))}</div>
+    `;
+    chatMessages.appendChild(msgDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function sendMessage() {
+    const message = chatInput.value.trim();
+    if (!message) return;
+
+    // Add user message to UI and history
+    addMessageToUI('user', message);
+    conversationHistory.push({ role: 'user', content: message });
+    chatInput.value = '';
+
+    // Show loading
+    chatSendBtn.disabled = true;
+    chatSendBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const response = await fetch('{{ url_for("application_chat", id=application.id) }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages: conversationHistory,
+                include_job_desc: includeJobDesc.checked
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            addMessageToUI('assistant', `Error: ${data.error}`);
+        } else {
+            // Add AI response to UI and history
+            addMessageToUI('assistant', data.response);
+            conversationHistory.push({ role: 'assistant', content: data.response });
+        }
+    } catch (err) {
+        addMessageToUI('assistant', `Error: ${err.message}`);
+    } finally {
+        chatSendBtn.disabled = false;
+        chatSendBtn.innerHTML = '<i class="bi bi-send"></i>';
+    }
+}
+
+// Event listeners
+chatSendBtn?.addEventListener('click', sendMessage);
+
+chatInput?.addEventListener('keydown', function(e) {
+    // Ctrl+Enter to send
+    if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        sendMessage();
+    }
+    // Enter and Shift+Enter for new lines (default behavior)
+});
 </script>
 {% endblock %}

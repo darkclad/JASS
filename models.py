@@ -124,6 +124,38 @@ class SearchHistory(db.Model):
         return f'<Search "{self.keywords}">'
 
 
+class SearchCache(db.Model):
+    """Cache for search results - valid for 24 hours."""
+    id = db.Column(db.Integer, primary_key=True)
+    cache_key = db.Column(db.String(500), unique=True, nullable=False)  # Hash of search params
+    keywords = db.Column(db.String(500), nullable=False)
+    location = db.Column(db.String(200))
+    boards = db.Column(db.Text)  # JSON list of board tokens
+    results = db.Column(db.Text, nullable=False)  # JSON list of job results
+    result_count = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<SearchCache "{self.keywords}" ({self.result_count} results)>'
+
+    @staticmethod
+    def get_cache_key(keywords: str, location: str = None, boards: list = None) -> str:
+        """Generate a unique cache key from search parameters."""
+        import hashlib
+        key_parts = [keywords.lower().strip()]
+        if location:
+            key_parts.append(location.lower().strip())
+        if boards:
+            key_parts.append(','.join(sorted(b.lower() for b in boards)))
+        return hashlib.md5('|'.join(key_parts).encode()).hexdigest()
+
+    def is_valid(self, max_age_hours: int = 24) -> bool:
+        """Check if cache entry is still valid."""
+        from datetime import timedelta
+        age = datetime.utcnow() - self.created_at
+        return age < timedelta(hours=max_age_hours)
+
+
 class AppSettings(db.Model):
     """Application-wide settings."""
     id = db.Column(db.Integer, primary_key=True)

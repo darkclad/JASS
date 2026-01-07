@@ -54,6 +54,7 @@
                 <div class="col-md-1 d-flex align-items-end">
                     <button type="submit" class="btn btn-primary w-100" id="searchBtn">
                         <span class="btn-text"><i class="bi bi-search"></i></span>
+                        <span class="btn-status" style="display: none;"></span>
                         <span class="spinner-border" role="status"></span>
                     </button>
                 </div>
@@ -63,9 +64,19 @@
 </div>
 
 {% if results is not none %}
+<!-- Cache key for filter persistence -->
+<input type="hidden" id="searchCacheKey" value="{{ keywords|lower }}|{{ location|default('')|lower }}|{{ boards|default('')|lower }}">
+
 <!-- Filter Bar -->
 <div class="filter-bar mb-3">
     <div class="row align-items-center">
+        {% if from_cache %}
+        <div class="col-auto">
+            <span class="badge bg-secondary" title="Cached at {{ cache_age.strftime('%Y-%m-%d %H:%M') if cache_age else 'unknown' }}">
+                <i class="bi bi-database"></i> Cached
+            </span>
+        </div>
+        {% endif %}
         <div class="col-auto">
             <strong>{{ results|length }} jobs found</strong>
         </div>
@@ -73,7 +84,7 @@
             <input type="text" id="filterTitle" class="form-control form-control-sm" placeholder="Filter by title...">
         </div>
         <div class="col-auto">
-            <input type="text" id="filterCompany" class="form-control form-control-sm" placeholder="Filter by company...">
+            <input type="text" id="filterCompany" class="form-control form-control-sm" placeholder="Company (-exclude)..." title="Filter by company. Use comma to separate, prefix with - to exclude (e.g., google, -meta)">
         </div>
         <div class="col-auto">
             <select id="filterSaved" class="form-select form-select-sm">
@@ -82,8 +93,58 @@
                 <option value="saved">Saved only</option>
             </select>
         </div>
+        <div class="col-auto">
+            <input type="text" id="filterInclude" class="form-control form-control-sm"
+                   placeholder="Include words..." title="Show only jobs containing these words (comma-separated)">
+        </div>
+        <div class="col-auto">
+            <input type="text" id="filterExclude" class="form-control form-control-sm"
+                   placeholder="Exclude words..." title="Hide jobs containing these words (comma-separated)">
+        </div>
+        <div class="col-auto">
+            <input type="text" id="filterLocationInclude" class="form-control form-control-sm"
+                   placeholder="Location (e.g., US)..." title="Show only jobs in this country (supports aliases: US, USA, Remote)">
+        </div>
+        <div class="col-auto">
+            <select id="filterJobType" class="form-select form-select-sm">
+                <option value="">All types</option>
+                <option value="remote">Remote</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="onsite">On-site</option>
+            </select>
+        </div>
+        <div class="col-auto" id="filterCount" style="display: none;">
+            <span class="badge bg-info"><span id="visibleCount">0</span> visible</span>
+            <button type="button" class="btn btn-sm btn-link text-muted p-0 ms-2" id="clearFiltersBtn"
+                    title="Clear all filters">
+                <i class="bi bi-x-circle"></i>
+            </button>
+        </div>
+        <div class="col-auto ms-auto">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="refreshBtn"
+                    title="Refresh search results from Greenhouse">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+    </div>
+    <!-- Filter Presets Row -->
+    <div class="row align-items-center mt-2 pt-2 border-top" id="filterPresetsRow">
+        <div class="col-auto">
+            <small class="text-muted"><i class="bi bi-bookmark"></i> Presets:</small>
+        </div>
+        <div class="col-auto" id="filterPresetsList">
+            <!-- Preset badges loaded dynamically -->
+        </div>
+        <div class="col-auto">
+            <button type="button" class="btn btn-sm btn-outline-success" id="savePresetBtn" title="Save current filters as preset">
+                <i class="bi bi-plus-lg"></i> Save
+            </button>
+        </div>
     </div>
 </div>
+
+<!-- Job Description Preview Tooltip -->
+<div id="jobPreviewTooltip" class="job-preview-tooltip"></div>
 
 <!-- Results -->
 <div id="resultsContainer">
@@ -91,13 +152,15 @@
     <div class="card job-card mb-2 {% if job.is_saved %}saved{% endif %}"
          data-title="{{ job.title|lower }}"
          data-company="{{ job.company|lower }}"
+         data-location="{{ job.location|lower }}"
          data-saved="{{ 'saved' if job.is_saved else 'new' }}"
-         data-days="{{ job.freshness.days if job.freshness.days is not none else 999 }}">
+         data-days="{{ job.freshness.days if job.freshness.days is not none else 999 }}"
+         data-description="{{ job.description|e }}">
         <div class="card-body py-3">
             <div class="row align-items-center">
                 <div class="col">
                     <h6 class="mb-1">
-                        {{ job.title }}
+                        <span class="job-title-hover">{{ job.title }}</span>
                         <span class="badge bg-{{ job.freshness.class }} ms-2" style="font-size: 0.7rem;">
                             {{ job.freshness.label }}
                         </span>
@@ -143,7 +206,12 @@
 
 {% if recent_searches %}
 <div class="card mt-4">
-    <div class="card-header"><i class="bi bi-clock-history"></i> Recent Searches</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clock-history"></i> Recent Searches</span>
+        <button type="button" class="btn btn-sm btn-outline-danger" id="clearSearchHistoryBtn" title="Clear all recent searches and cached data">
+            <i class="bi bi-trash"></i> Clear
+        </button>
+    </div>
     <div class="card-body">
         {% for search in recent_searches %}
         <a href="#" class="badge bg-light text-dark me-2 mb-2 text-decoration-none search-history-link"
@@ -181,11 +249,17 @@ document.querySelectorAll('.save-job-btn').forEach(btn => {
             const data = await response.json();
 
             if (data.success) {
-                this.classList.remove('btn-outline-primary');
-                this.classList.add('btn-success');
-                this.innerHTML = '<i class="bi bi-check"></i> Saved';
-                this.closest('.job-card').classList.add('saved');
-                this.closest('.job-card').dataset.saved = 'saved';
+                // Replace button with a link to the saved job
+                const link = document.createElement('a');
+                link.href = `/jobs/${data.job_id}`;
+                link.className = 'btn btn-sm btn-success';
+                link.innerHTML = '<i class="bi bi-check"></i> Saved';
+                this.parentNode.replaceChild(link, this);
+
+                // Update card state
+                const card = link.closest('.job-card');
+                card.classList.add('saved');
+                card.dataset.saved = 'saved';
             }
         } catch (err) {
             this.disabled = false;
@@ -195,34 +269,424 @@ document.querySelectorAll('.save-job-btn').forEach(btn => {
     });
 });
 
+// Country aliases for location filtering
+const COUNTRY_ALIASES = {
+    'us': ['usa', 'u.s.', 'u.s.a.', 'united states', 'america', 'american'],
+    'uk': ['united kingdom', 'great britain', 'britain', 'england', 'scotland', 'wales', 'british'],
+    'canada': ['canadian', 'ca'],
+    'germany': ['german', 'deutschland', 'de'],
+    'france': ['french', 'fr'],
+    'israel': ['israeli', 'il', 'tel aviv'],
+    'india': ['indian', 'in', 'bangalore', 'mumbai', 'hyderabad'],
+    'australia': ['australian', 'au'],
+    'netherlands': ['dutch', 'holland', 'nl', 'amsterdam'],
+    'ireland': ['irish', 'ie', 'dublin'],
+    'singapore': ['sg'],
+    'japan': ['japanese', 'jp', 'tokyo'],
+    'remote': ['anywhere', 'worldwide', 'global', 'work from home', 'wfh']
+};
+
+function getLocationPatterns(input) {
+    const normalized = input.toLowerCase().trim();
+    if (!normalized) return [];
+
+    // Start with the input itself
+    const patterns = [normalized];
+
+    // Check if input matches a country key and add all aliases
+    if (COUNTRY_ALIASES[normalized]) {
+        patterns.push(...COUNTRY_ALIASES[normalized]);
+    }
+
+    // Check if input matches any alias and add the key + all aliases
+    for (const [country, aliases] of Object.entries(COUNTRY_ALIASES)) {
+        if (aliases.includes(normalized)) {
+            patterns.push(country, ...aliases);
+        }
+    }
+
+    return [...new Set(patterns)]; // Remove duplicates
+}
+
+// Job type patterns for filtering
+const JOB_TYPE_PATTERNS = {
+    'remote': ['remote', 'work from home', 'wfh', 'anywhere', 'worldwide', 'distributed'],
+    'hybrid': ['hybrid'],
+    'onsite': ['on-site', 'onsite', 'in-office', 'in office', 'office-based']
+};
+
+function matchesJobType(location, description, jobType) {
+    if (!jobType) return true;
+    const patterns = JOB_TYPE_PATTERNS[jobType] || [];
+    const searchText = (location + ' ' + description).toLowerCase();
+    return patterns.some(p => searchText.includes(p));
+}
+
 // Filtering
 function applyFilters() {
     const titleFilter = document.getElementById('filterTitle').value.toLowerCase();
     const companyFilter = document.getElementById('filterCompany').value.toLowerCase();
     const savedFilter = document.getElementById('filterSaved').value;
+    const includeFilter = document.getElementById('filterInclude').value.toLowerCase();
+    const excludeFilter = document.getElementById('filterExclude').value.toLowerCase();
+    const locationFilter = document.getElementById('filterLocationInclude')?.value.toLowerCase() || '';
+    const jobTypeFilter = document.getElementById('filterJobType')?.value || '';
+
+    // Parse comma-separated words
+    const includeWords = includeFilter ? includeFilter.split(',').map(w => w.trim()).filter(w => w) : [];
+    const excludeWords = excludeFilter ? excludeFilter.split(',').map(w => w.trim()).filter(w => w) : [];
+
+    // Parse company filter: support comma-separated, -prefix for exclusion
+    const companyFilters = companyFilter ? companyFilter.split(',').map(w => w.trim()).filter(w => w) : [];
+    const includeCompanies = companyFilters.filter(c => !c.startsWith('-'));
+    const excludeCompanies = companyFilters.filter(c => c.startsWith('-')).map(c => c.substring(1).trim()).filter(c => c);
+
+    // Get location patterns (country + aliases)
+    const locationPatterns = getLocationPatterns(locationFilter);
+
+    let visibleCount = 0;
+    const totalCount = document.querySelectorAll('.job-card').length;
 
     document.querySelectorAll('.job-card').forEach(card => {
         const title = card.dataset.title;
         const company = card.dataset.company;
+        const location = card.dataset.location || '';
         const saved = card.dataset.saved;
+        const description = (card.dataset.description || '').toLowerCase();
+
+        // Combined searchable text (title + company + description)
+        const searchableText = title + ' ' + company + ' ' + description;
 
         let show = true;
         if (titleFilter && !title.includes(titleFilter)) show = false;
-        if (companyFilter && !company.includes(companyFilter)) show = false;
+
+        // Company filter: include if matches ANY include pattern, exclude if matches ANY exclude pattern
+        if (show && (includeCompanies.length > 0 || excludeCompanies.length > 0)) {
+            // If there are include filters, must match at least one
+            if (includeCompanies.length > 0) {
+                const matchesInclude = includeCompanies.some(c => company.includes(c));
+                if (!matchesInclude) show = false;
+            }
+            // If there are exclude filters, must not match any
+            if (show && excludeCompanies.length > 0) {
+                const matchesExclude = excludeCompanies.some(c => company.includes(c));
+                if (matchesExclude) show = false;
+            }
+        }
+
         if (savedFilter && saved !== savedFilter) show = false;
 
+        // Location filter: job location must match ANY of the country patterns
+        if (show && locationPatterns.length > 0) {
+            let locationMatch = false;
+            for (const pattern of locationPatterns) {
+                if (location.includes(pattern)) {
+                    locationMatch = true;
+                    break;
+                }
+            }
+            if (!locationMatch) show = false;
+        }
+
+        // Job type filter: Remote, Hybrid, On-site
+        if (show && jobTypeFilter) {
+            if (!matchesJobType(location, description, jobTypeFilter)) {
+                show = false;
+            }
+        }
+
+        // Include filter: job must contain ALL include words
+        if (show && includeWords.length > 0) {
+            for (const word of includeWords) {
+                if (!searchableText.includes(word)) {
+                    show = false;
+                    break;
+                }
+            }
+        }
+
+        // Exclude filter: job must NOT contain ANY exclude words
+        if (show && excludeWords.length > 0) {
+            for (const word of excludeWords) {
+                if (searchableText.includes(word)) {
+                    show = false;
+                    break;
+                }
+            }
+        }
+
         card.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
+    });
+
+    // Show/hide visible count badge when filters are active
+    const filterCountEl = document.getElementById('filterCount');
+    const hasActiveFilters = titleFilter || companyFilter || savedFilter || includeWords.length || excludeWords.length || locationPatterns.length || jobTypeFilter;
+    if (filterCountEl) {
+        filterCountEl.style.display = hasActiveFilters ? '' : 'none';
+        document.getElementById('visibleCount').textContent = visibleCount;
+    }
+}
+
+// Filter persistence using localStorage
+const cacheKeyEl = document.getElementById('searchCacheKey');
+const filterStorageKey = cacheKeyEl ? 'jass_filters_' + cacheKeyEl.value : null;
+
+function saveFilters() {
+    if (!filterStorageKey) return;
+    const filters = {
+        title: document.getElementById('filterTitle')?.value || '',
+        company: document.getElementById('filterCompany')?.value || '',
+        saved: document.getElementById('filterSaved')?.value || '',
+        include: document.getElementById('filterInclude')?.value || '',
+        exclude: document.getElementById('filterExclude')?.value || '',
+        location: document.getElementById('filterLocationInclude')?.value || '',
+        jobType: document.getElementById('filterJobType')?.value || ''
+    };
+    localStorage.setItem(filterStorageKey, JSON.stringify(filters));
+}
+
+function restoreFilters() {
+    if (!filterStorageKey) return;
+    try {
+        const saved = localStorage.getItem(filterStorageKey);
+        if (saved) {
+            const filters = JSON.parse(saved);
+            if (filters.title) document.getElementById('filterTitle').value = filters.title;
+            if (filters.company) document.getElementById('filterCompany').value = filters.company;
+            if (filters.saved) document.getElementById('filterSaved').value = filters.saved;
+            if (filters.include) document.getElementById('filterInclude').value = filters.include;
+            if (filters.exclude) document.getElementById('filterExclude').value = filters.exclude;
+            if (filters.location) document.getElementById('filterLocationInclude').value = filters.location;
+            if (filters.jobType) document.getElementById('filterJobType').value = filters.jobType;
+            applyFilters();
+        }
+    } catch (e) {
+        console.warn('Failed to restore filters:', e);
+    }
+}
+
+// Apply filters and save on change
+function applyAndSaveFilters() {
+    applyFilters();
+    saveFilters();
+}
+
+document.getElementById('filterTitle')?.addEventListener('input', applyAndSaveFilters);
+document.getElementById('filterCompany')?.addEventListener('input', applyAndSaveFilters);
+document.getElementById('filterSaved')?.addEventListener('change', applyAndSaveFilters);
+document.getElementById('filterInclude')?.addEventListener('input', applyAndSaveFilters);
+document.getElementById('filterExclude')?.addEventListener('input', applyAndSaveFilters);
+document.getElementById('filterLocationInclude')?.addEventListener('input', applyAndSaveFilters);
+document.getElementById('filterJobType')?.addEventListener('change', applyAndSaveFilters);
+
+// Restore filters on page load
+restoreFilters();
+
+// Clear all filters
+document.getElementById('clearFiltersBtn')?.addEventListener('click', function() {
+    document.getElementById('filterTitle').value = '';
+    document.getElementById('filterCompany').value = '';
+    document.getElementById('filterSaved').value = '';
+    document.getElementById('filterInclude').value = '';
+    document.getElementById('filterExclude').value = '';
+    document.getElementById('filterLocationInclude').value = '';
+    document.getElementById('filterJobType').value = '';
+    if (filterStorageKey) {
+        localStorage.removeItem(filterStorageKey);
+    }
+    applyFilters();
+});
+
+// ============ Filter Presets ============
+const PRESETS_STORAGE_KEY = 'jass_filter_presets';
+
+function getFilterPresets() {
+    try {
+        const data = localStorage.getItem(PRESETS_STORAGE_KEY);
+        return data ? JSON.parse(data) : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function saveFilterPresets(presets) {
+    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+}
+
+function getCurrentFilters() {
+    return {
+        title: document.getElementById('filterTitle')?.value || '',
+        company: document.getElementById('filterCompany')?.value || '',
+        saved: document.getElementById('filterSaved')?.value || '',
+        include: document.getElementById('filterInclude')?.value || '',
+        exclude: document.getElementById('filterExclude')?.value || '',
+        location: document.getElementById('filterLocationInclude')?.value || '',
+        jobType: document.getElementById('filterJobType')?.value || ''
+    };
+}
+
+function applyPresetFilters(filters) {
+    document.getElementById('filterTitle').value = filters.title || '';
+    document.getElementById('filterCompany').value = filters.company || '';
+    document.getElementById('filterSaved').value = filters.saved || '';
+    document.getElementById('filterInclude').value = filters.include || '';
+    document.getElementById('filterExclude').value = filters.exclude || '';
+    document.getElementById('filterLocationInclude').value = filters.location || '';
+    document.getElementById('filterJobType').value = filters.jobType || '';
+    applyAndSaveFilters();
+}
+
+function renderFilterPresets() {
+    const container = document.getElementById('filterPresetsList');
+    if (!container) return;
+
+    const presets = getFilterPresets();
+    const presetNames = Object.keys(presets);
+
+    if (presetNames.length === 0) {
+        container.innerHTML = '<small class="text-muted">No saved presets</small>';
+        return;
+    }
+
+    container.innerHTML = presetNames.map(name => `
+        <span class="badge bg-light text-dark me-1 preset-badge" style="cursor: pointer;" data-preset="${name}">
+            ${name}
+            <button type="button" class="btn-close btn-close-sm ms-1" style="font-size: 0.5rem;" data-delete-preset="${name}" title="Delete preset"></button>
+        </span>
+    `).join('');
+
+    // Add click handlers for presets
+    container.querySelectorAll('.preset-badge').forEach(badge => {
+        badge.addEventListener('click', function(e) {
+            // Ignore if clicking the delete button
+            if (e.target.hasAttribute('data-delete-preset')) return;
+
+            const presetName = this.dataset.preset;
+            const presets = getFilterPresets();
+            if (presets[presetName]) {
+                applyPresetFilters(presets[presetName]);
+            }
+        });
+    });
+
+    // Add click handlers for delete buttons
+    container.querySelectorAll('[data-delete-preset]').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const presetName = this.dataset.deletePreset;
+            if (confirm(`Delete preset "${presetName}"?`)) {
+                const presets = getFilterPresets();
+                delete presets[presetName];
+                saveFilterPresets(presets);
+                renderFilterPresets();
+            }
+        });
     });
 }
 
-document.getElementById('filterTitle')?.addEventListener('input', applyFilters);
-document.getElementById('filterCompany')?.addEventListener('input', applyFilters);
-document.getElementById('filterSaved')?.addEventListener('change', applyFilters);
+// Save preset button
+document.getElementById('savePresetBtn')?.addEventListener('click', function() {
+    const filters = getCurrentFilters();
 
-// Search form loading state
+    // Check if any filter is set
+    const hasFilters = Object.values(filters).some(v => v);
+    if (!hasFilters) {
+        alert('Set some filters first before saving a preset.');
+        return;
+    }
+
+    const name = prompt('Enter a name for this filter preset:');
+    if (!name || !name.trim()) return;
+
+    const presets = getFilterPresets();
+    presets[name.trim()] = filters;
+    saveFilterPresets(presets);
+    renderFilterPresets();
+});
+
+// Initialize presets on page load
+renderFilterPresets();
+
+// Refresh button - forces a fresh search
+document.getElementById('refreshBtn')?.addEventListener('click', function() {
+    const form = document.getElementById('searchForm');
+    // Add hidden input for refresh flag
+    let refreshInput = form.querySelector('input[name="refresh"]');
+    if (!refreshInput) {
+        refreshInput = document.createElement('input');
+        refreshInput.type = 'hidden';
+        refreshInput.name = 'refresh';
+        form.appendChild(refreshInput);
+    }
+    refreshInput.value = '1';
+    form.submit();
+});
+
+// Search form loading state with timer
 document.getElementById('searchForm')?.addEventListener('submit', function() {
     const btn = document.getElementById('searchBtn');
-    setLoading(btn, true);
+    const btnText = btn.querySelector('.btn-text');
+    const btnStatus = btn.querySelector('.btn-status');
+    const spinner = btn.querySelector('.spinner-border');
+
+    // Show loading state with timer
+    btn.disabled = true;
+    btn.classList.add('loading');
+    document.body.classList.add('loading');
+    btnText.style.display = 'none';
+    btnStatus.style.display = 'inline';
+    spinner.style.display = 'inline-block';
+
+    let startTime = Date.now();
+    function updateTimer() {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        btnStatus.textContent = elapsed + 's';
+    }
+    updateTimer();
+    setInterval(updateTimer, 1000);
+});
+
+// Clear search history button
+document.getElementById('clearSearchHistoryBtn')?.addEventListener('click', async function() {
+    if (!confirm('Clear all recent searches and cached data?')) return;
+
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const response = await fetch('/search/clear-history', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+
+        // Check if response is OK before parsing JSON
+        if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.success) {
+            // Remove the recent searches card
+            this.closest('.card').remove();
+            // Also clear localStorage filter cache
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('jass_filters_')) {
+                    localStorage.removeItem(key);
+                }
+            }
+        } else {
+            alert('Failed to clear search history: ' + (data.error || 'Unknown error'));
+            this.disabled = false;
+            this.innerHTML = '<i class="bi bi-trash"></i> Clear';
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+        this.disabled = false;
+        this.innerHTML = '<i class="bi bi-trash"></i> Clear';
+    }
 });
 
 // Clickable search history - fill form and submit
@@ -274,6 +738,74 @@ document.querySelectorAll('.job-card').forEach(card => {
             saveBtn.click();
         }
     });
+});
+
+// Job description hover preview
+const tooltip = document.getElementById('jobPreviewTooltip');
+let hoverTimeout;
+let isOverTooltip = false;
+
+document.querySelectorAll('.job-title-hover').forEach(title => {
+    title.addEventListener('mouseenter', function(e) {
+        const card = this.closest('.job-card');
+        const description = card?.dataset.description;
+        if (!description) return;
+
+        hoverTimeout = setTimeout(() => {
+            tooltip.innerHTML = description;
+            tooltip.scrollTop = 0;  // Reset scroll position for new content
+            tooltip.classList.add('visible');
+
+            // Position tooltip near the title
+            const rect = this.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+
+            let top = rect.bottom + scrollTop + 5;
+            let left = rect.left + scrollLeft;
+
+            // Keep tooltip within viewport
+            if (left + 400 > window.innerWidth) {
+                left = window.innerWidth - 420 + scrollLeft;
+            }
+            if (top + 300 > window.innerHeight + scrollTop) {
+                top = rect.top + scrollTop - 310;
+            }
+
+            tooltip.style.top = top + 'px';
+            tooltip.style.left = left + 'px';
+        }, 300);
+    });
+
+    title.addEventListener('mouseleave', function() {
+        clearTimeout(hoverTimeout);
+        // Delay hiding to allow moving to tooltip
+        setTimeout(() => {
+            if (!isOverTooltip) {
+                tooltip.classList.remove('visible');
+                tooltip.scrollTop = 0;
+            }
+        }, 100);
+    });
+});
+
+// Keep tooltip visible when hovering over it
+tooltip?.addEventListener('mouseenter', function() {
+    isOverTooltip = true;
+});
+
+tooltip?.addEventListener('mouseleave', function() {
+    isOverTooltip = false;
+    tooltip.classList.remove('visible');
+    tooltip.scrollTop = 0;
+});
+
+// Hide tooltip when scrolling
+document.getElementById('resultsContainer')?.addEventListener('scroll', function() {
+    clearTimeout(hoverTimeout);
+    isOverTooltip = false;
+    tooltip.classList.remove('visible');
+    tooltip.scrollTop = 0;
 });
 </script>
 {% endblock %}

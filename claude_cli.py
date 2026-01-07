@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from logger import get_logger
+from ai_service import _clean_cover_letter
 
 log = get_logger('claude_cli')
 
@@ -227,51 +228,59 @@ Return ONLY "Done" when complete."""
 
         return cover_letter
 
+    def chat(self, messages: list, context: str = None) -> str:
+        """
+        Send a chat message using Claude CLI.
 
-def _clean_cover_letter(text: str) -> str:
-    """Remove placeholder fields from cover letter."""
-    import re
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            context: Optional context to include (e.g., job description)
 
-    placeholder_patterns = [
-        r'^\[Current Date\].*$',
-        r'^\[Your Name\].*$',
-        r'^\[Your Address\].*$',
-        r'^\[City,?\s*State,?\s*Zip\].*$',
-        r'^\[Company Address\].*$',
-        r'^\[Company Name\].*$',
-        r'^\[Hiring Manager\].*$',
-        r'^\[Phone\].*$',
-        r'^\[Email\].*$',
-        r'^\[Date\].*$',
-        r'^\d{1,2}/\d{1,2}/\d{2,4}$',
-        r'^[A-Z][a-z]+ \d{1,2},? \d{4}$',
-    ]
+        Returns:
+            AI response text
+        """
+        # Build the prompt from messages
+        prompt_parts = []
 
-    lines = text.split('\n')
-    cleaned_lines = []
-    skip_blank_after_removal = False
+        # System instruction first
+        prompt_parts.append("You are a helpful assistant for job applications. Be concise and helpful.")
 
-    for line in lines:
-        stripped = line.strip()
+        if context:
+            prompt_parts.append(f"\n--- CONTEXT ---\n{context}\n--- END CONTEXT ---\n")
 
-        is_placeholder = False
-        for pattern in placeholder_patterns:
-            if re.match(pattern, stripped, re.IGNORECASE):
-                is_placeholder = True
-                skip_blank_after_removal = True
-                break
+        # Add conversation history - only the latest user message for single-turn
+        # For multi-turn, include full history
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            if role == 'user':
+                prompt_parts.append(f"\nUser: {content}")
+            else:
+                prompt_parts.append(f"\nAssistant: {content}")
 
-        if skip_blank_after_removal and stripped == '':
-            continue
+        prompt_parts.append("\nAssistant:")
 
-        if not is_placeholder:
-            skip_blank_after_removal = False
-            cleaned_lines.append(line)
+        full_prompt = "\n".join(prompt_parts)
 
-    while cleaned_lines and cleaned_lines[0].strip() == '':
-        cleaned_lines.pop(0)
+        log.info(f"Calling Claude CLI for chat... Context provided: {'Yes' if context else 'No'}, context length: {len(context) if context else 0}")
+        log.debug(f"Full prompt length: {len(full_prompt)} chars")
 
-    return '\n'.join(cleaned_lines)
+        # Use stdin for long prompts to avoid command line length limits
+        cmd = [self.claude_cmd, '-p', '-', '--model', self.model, '--dangerously-skip-permissions']
+        result = subprocess.run(
+            cmd,
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            timeout=120,  # 2 minute timeout
+            shell=_USE_SHELL
+        )
+
+        if result.returncode != 0:
+            log.error(f"Claude CLI error: {result.stderr}")
+            raise RuntimeError(f"Claude CLI failed: {result.stderr}")
+
+        return result.stdout.strip()
 
 
 def is_claude_cli_available() -> bool:

@@ -251,6 +251,9 @@ def search_greenhouse(keywords: str, boards: List[str] = None,
         custom_boards = AppSettings.get('greenhouse_boards')
         board_list = custom_boards if custom_boards else Config.DEFAULT_BOARDS
 
+    # Filter out commented boards (lines starting with #)
+    board_list = [b for b in board_list if not b.startswith('#')]
+
     return client.search_jobs(keyword_list, board_list, location)
 
 

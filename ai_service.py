@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 import anthropic
 import openai
+import requests
 
 from logger import get_logger
 
@@ -74,6 +75,19 @@ class AIProvider(ABC):
                                hiring_manager: str = None) -> str:
         """Generate a cover letter for the job."""
         pass
+
+    def chat(self, messages: list, context: str = None) -> str:
+        """
+        Send a chat message and get a response.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            context: Optional context to include (e.g., job description)
+
+        Returns:
+            AI response text
+        """
+        raise NotImplementedError("Chat not supported by this provider")
 
 
 class ClaudeProvider(AIProvider):
@@ -162,6 +176,22 @@ Return ONLY the cover letter in Markdown format, no explanations."""
         )
 
         return _clean_cover_letter(response.content[0].text)
+
+    def chat(self, messages: list, context: str = None) -> str:
+        """Send a chat message and get a response."""
+        # Build system message if context provided
+        system_msg = "You are a helpful assistant for job applications. Be concise and helpful."
+        if context:
+            system_msg += f"\n\nContext (Job Description):\n{context}"
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=4096,
+            system=system_msg,
+            messages=messages
+        )
+
+        return response.content[0].text
 
 
 class OpenAIProvider(AIProvider):
@@ -271,6 +301,158 @@ Return ONLY the cover letter in Markdown format, no explanations."""
         log.info(f"Response: {response.usage}")
         return _clean_cover_letter(response.choices[0].message.content)
 
+    def chat(self, messages: list, context: str = None) -> str:
+        """Send a chat message and get a response."""
+        # Build system message if context provided
+        system_msg = "You are a helpful assistant for job applications. Be concise and helpful."
+        if context:
+            system_msg += f"\n\nContext (Job Description):\n{context}"
+
+        # Prepend system message
+        all_messages = [{"role": "system", "content": system_msg}] + messages
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_tokens=4096,
+            messages=all_messages
+        )
+
+        return response.choices[0].message.content
+
+
+class OllamaProvider(AIProvider):
+    """Ollama provider for local LLM inference."""
+
+    DEFAULT_RESUME_PROMPT = ClaudeProvider.DEFAULT_RESUME_PROMPT
+    DEFAULT_COVER_LETTER_PROMPT = ClaudeProvider.DEFAULT_COVER_LETTER_PROMPT
+
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2",
+                 resume_prompt: str = None, cover_letter_prompt: str = None):
+        self.base_url = base_url.rstrip('/')
+        self.model = model
+        self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
+        self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
+
+    @staticmethod
+    def list_models(base_url: str = "http://localhost:11434") -> list:
+        """List available models from Ollama server."""
+        try:
+            response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            models = []
+            for model in data.get('models', []):
+                name = model.get('name', '')
+                size = model.get('size', 0)
+                # Format size in GB
+                size_gb = size / (1024 ** 3) if size else 0
+                models.append({
+                    'name': name,
+                    'size': f"{size_gb:.1f}GB" if size_gb else '',
+                    'modified': model.get('modified_at', '')
+                })
+            return models
+        except requests.exceptions.RequestException as e:
+            log.warning(f"Failed to list Ollama models: {e}")
+            return []
+
+    @staticmethod
+    def is_available(base_url: str = "http://localhost:11434") -> bool:
+        """Check if Ollama server is running."""
+        try:
+            response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=3)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
+
+    def _generate(self, prompt: str, max_tokens: int = 8192) -> str:
+        """Generate text using Ollama API."""
+        log.info(f"=== Ollama Generation ===")
+        log.info(f"Model: {self.model}")
+        log.debug(f"Prompt length: {len(prompt)} chars")
+
+        response = requests.post(
+            f"{self.base_url}/api/generate",
+            json={
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": 0.7,
+                }
+            },
+            timeout=300  # 5 minute timeout for generation
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        generated = result.get('response', '')
+        log.info(f"Response length: {len(generated)} chars")
+
+        return generated
+
+    def generate_tailored_resume(self, master_resume: str, job_description: str) -> str:
+        """Generate a tailored resume."""
+        prompt = f"""{self.resume_prompt}
+
+MASTER RESUME:
+{master_resume}
+
+JOB DESCRIPTION:
+{job_description}
+
+Return ONLY the tailored resume in Markdown format, no explanations."""
+
+        return self._generate(prompt, max_tokens=8192)
+
+    def generate_cover_letter(self, resume: str, job_description: str,
+                               company: str, job_title: str,
+                               hiring_manager: str = None) -> str:
+        """Generate a cover letter."""
+        if hiring_manager:
+            greeting_line = f"HIRING MANAGER: {hiring_manager} (use 'Dear {hiring_manager},' as the greeting)"
+        else:
+            greeting_line = "HIRING MANAGER: Unknown (use 'Dear Hiring Manager,' as the greeting)"
+
+        prompt = f"""{self.cover_letter_prompt}
+
+RESUME:
+{resume}
+
+JOB DESCRIPTION:
+{job_description}
+
+COMPANY: {company}
+POSITION: {job_title}
+{greeting_line}
+
+Return ONLY the cover letter in Markdown format, no explanations."""
+
+        return _clean_cover_letter(self._generate(prompt, max_tokens=2048))
+
+    def chat(self, messages: list, context: str = None) -> str:
+        """Send a chat message and get a response."""
+        # Build system message if context provided
+        system_msg = "You are a helpful assistant for job applications. Be concise and helpful."
+        if context:
+            system_msg += f"\n\nContext (Job Description):\n{context}"
+
+        # Combine all messages into a single prompt for Ollama
+        prompt_parts = [system_msg, ""]
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            if role == 'user':
+                prompt_parts.append(f"User: {content}")
+            else:
+                prompt_parts.append(f"Assistant: {content}")
+
+        prompt_parts.append("Assistant:")
+        full_prompt = "\n".join(prompt_parts)
+
+        return self._generate(full_prompt, max_tokens=4096)
+
 
 def get_ai_provider(provider: str = None, api_key: str = None,
                     model: str = None, resume_prompt: str = None,
@@ -279,8 +461,8 @@ def get_ai_provider(provider: str = None, api_key: str = None,
     Factory function to get an AI provider.
 
     Args:
-        provider: 'claude', 'openai', or 'claude-cli'
-        api_key: API key (uses env var if not provided, not needed for claude-cli)
+        provider: 'claude', 'openai', 'claude-cli', or 'ollama'
+        api_key: API key (uses env var if not provided, not needed for claude-cli/ollama)
         model: Model name
         resume_prompt: Custom prompt for resume generation
         cover_letter_prompt: Custom prompt for cover letter generation
@@ -308,6 +490,12 @@ def get_ai_provider(provider: str = None, api_key: str = None,
         from claude_cli import ClaudeCLIProvider
         return ClaudeCLIProvider(model or "claude-sonnet-4-20250514",
                                  resume_prompt, cover_letter_prompt)
+
+    elif provider == 'ollama':
+        # api_key is used to store the base URL for ollama (default: http://localhost:11434)
+        base_url = api_key or "http://localhost:11434"
+        return OllamaProvider(base_url, model or "llama3.2",
+                              resume_prompt, cover_letter_prompt)
 
     else:
         raise ValueError(f"Unknown provider: {provider}")

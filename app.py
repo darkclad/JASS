@@ -7,7 +7,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 import markdown
 
 from config import Config
-from models import db, MasterResume, Job, Application, AIConfig, SearchHistory, AppSettings
+from models import db, MasterResume, Job, Application, AIConfig, SearchHistory, SearchCache, AppSettings
 from logger import setup_logging, get_logger
 
 # Parse verbosity from command line (-d, -dd, -ddd, etc.)
@@ -86,14 +86,15 @@ def search():
 
 @app.route('/search', methods=['POST'])
 def search_jobs():
-    """Execute job search."""
+    """Execute job search with 24-hour caching."""
     from greenhouse import search_greenhouse
 
     keywords = request.form.get('keywords', '').strip()
     location = request.form.get('location', '').strip() or None
     boards = request.form.get('boards', '').strip()
+    force_refresh = request.form.get('refresh') == '1'
 
-    log.info(f"Search request: keywords='{keywords}', location='{location}', boards='{boards}'")
+    log.info(f"Search request: keywords='{keywords}', location='{location}', boards='{boards}', refresh={force_refresh}")
 
     if not keywords:
         flash('Please enter search keywords', 'warning')
@@ -104,35 +105,91 @@ def search_jobs():
     if boards:
         board_list = [b.strip() for b in boards.split(',') if b.strip()]
 
-    # Execute search
-    try:
-        log.debug(f"Executing greenhouse search with {len(board_list) if board_list else 'default'} boards")
-        results = search_greenhouse(keywords, board_list, location)
-        log.info(f"Search returned {len(results)} results")
+    # Generate cache key
+    cache_key = SearchCache.get_cache_key(keywords, location, board_list)
+    cached = SearchCache.query.filter_by(cache_key=cache_key).first()
+    from_cache = False
+    cache_age = None
 
-        # Check which jobs are already saved and partition results
-        new_jobs = []
-        saved_jobs = []
-        for job in results:
-            existing = Job.query.filter_by(greenhouse_id=job['greenhouse_id']).first()
-            job['is_saved'] = existing is not None
-            job['saved_id'] = existing.id if existing else None
-            if existing:
-                saved_jobs.append(job)
+    # Check cache (unless force refresh)
+    if cached and cached.is_valid() and not force_refresh:
+        log.info(f"Using cached results for '{keywords}' ({cached.result_count} results)")
+        results = json.loads(cached.results)
+        from_cache = True
+        cache_age = cached.created_at
+    else:
+        # Execute fresh search
+        try:
+            log.debug(f"Executing greenhouse search with {len(board_list) if board_list else 'default'} boards")
+            results = search_greenhouse(keywords, board_list, location)
+            log.info(f"Search returned {len(results)} results")
+
+            # Save to cache (replace existing if any)
+            if cached:
+                cached.results = json.dumps(results)
+                cached.result_count = len(results)
+                cached.created_at = datetime.utcnow()
             else:
-                new_jobs.append(job)
+                cached = SearchCache(
+                    cache_key=cache_key,
+                    keywords=keywords,
+                    location=location,
+                    boards=json.dumps(board_list) if board_list else None,
+                    results=json.dumps(results),
+                    result_count=len(results)
+                )
+                db.session.add(cached)
+            db.session.commit()
 
-        # New jobs first, then saved jobs at the end
-        results = new_jobs + saved_jobs
+            # Clean up old cache entries (older than 24 hours)
+            from datetime import timedelta
+            cutoff = datetime.utcnow() - timedelta(hours=24)
+            old_cache = SearchCache.query.filter(SearchCache.created_at < cutoff).all()
+            for old in old_cache:
+                db.session.delete(old)
+            db.session.commit()
 
-        # Save search history (limit to 10 entries)
-        history = SearchHistory(
+        except Exception as e:
+            log.error(f"Search error: {e}", exc_info=True)
+            flash(f'Search error: {str(e)}', 'error')
+            return redirect(url_for('search'))
+
+    # Check which jobs are already saved and partition results
+    new_jobs = []
+    saved_jobs = []
+    for job in results:
+        existing = Job.query.filter_by(greenhouse_id=job['greenhouse_id']).first()
+        job['is_saved'] = existing is not None
+        job['saved_id'] = existing.id if existing else None
+        if existing:
+            saved_jobs.append(job)
+        else:
+            new_jobs.append(job)
+
+    # New jobs first, then saved jobs at the end
+    results = new_jobs + saved_jobs
+
+    # Save search history only for fresh searches (not cached)
+    if not from_cache:
+        # Check if identical search already exists in recent history
+        existing_history = SearchHistory.query.filter_by(
             keywords=keywords,
-            location=location,
-            boards=json.dumps(board_list) if board_list else None,
-            result_count=len(results)
-        )
-        db.session.add(history)
+            location=location
+        ).first()
+
+        if existing_history:
+            # Update existing entry's timestamp and result count
+            existing_history.result_count = len(results)
+            existing_history.created_at = datetime.utcnow()
+        else:
+            # Create new history entry
+            history = SearchHistory(
+                keywords=keywords,
+                location=location,
+                boards=json.dumps(board_list) if board_list else None,
+                result_count=len(results)
+            )
+            db.session.add(history)
         db.session.commit()
 
         # Keep only last 10 searches
@@ -141,19 +198,16 @@ def search_jobs():
             db.session.delete(old)
         db.session.commit()
 
-        recent_searches = SearchHistory.query.order_by(SearchHistory.created_at.desc()).limit(10).all()
+    recent_searches = SearchHistory.query.order_by(SearchHistory.created_at.desc()).limit(10).all()
 
-        return render_template('search.html',
-                               results=results,
-                               keywords=keywords,
-                               location=location,
-                               boards=boards,
-                               recent_searches=recent_searches)
-
-    except Exception as e:
-        log.error(f"Search error: {e}", exc_info=True)
-        flash(f'Search error: {str(e)}', 'error')
-        return redirect(url_for('search'))
+    return render_template('search.html',
+                           results=results,
+                           keywords=keywords,
+                           location=location,
+                           boards=boards,
+                           recent_searches=recent_searches,
+                           from_cache=from_cache,
+                           cache_age=cache_age)
 
 
 @app.route('/search/save', methods=['POST'])
@@ -183,6 +237,23 @@ def save_job_from_search():
     db.session.commit()
 
     return jsonify({'success': True, 'job_id': job.id})
+
+
+@app.route('/search/clear-history', methods=['POST'])
+def clear_search_history():
+    """Clear all search history and cached search results."""
+    try:
+        # Clear search history
+        SearchHistory.query.delete()
+        # Clear search cache
+        SearchCache.query.delete()
+        db.session.commit()
+        log.info("Cleared search history and cache")
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        log.error(f"Failed to clear search history: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ============ Jobs ============
@@ -241,10 +312,128 @@ def parse_job():
     })
 
 
+@app.route('/jobs/check-duplicates', methods=['POST'])
+def check_duplicate_jobs():
+    """
+    Check for existing jobs with similar title, company, or description.
+
+    Duplicate detection algorithm:
+    1. Exact/substring match on company + title (score: 100 exact, 80 partial)
+    2. Word overlap on title (>50% overlap) with company match (score: 80)
+    3. Description phrase matching (5-word sequences) for same company (score: 70)
+    4. Description word overlap (>60%) for same company (score: 60)
+
+    Returns list of potential duplicates sorted by match score (highest first).
+    """
+    from bs4 import BeautifulSoup
+
+    data = request.get_json()
+    title = data.get('title', '').strip().lower()
+    company = data.get('company', '').strip().lower()
+    description = data.get('description', '').strip().lower()
+
+    if not title and not company and not description:
+        return jsonify({'duplicates': []})
+
+    duplicates = []
+    seen_ids = set()
+
+    all_jobs = Job.query.all()
+
+    for job in all_jobs:
+        if job.id in seen_ids:
+            continue
+
+        job_title = (job.title or '').lower()
+        job_company = (job.company or '').lower()
+
+        # Get plain text from job description (strip HTML)
+        job_desc_html = job.description or ''
+        job_desc = BeautifulSoup(job_desc_html, 'html.parser').get_text().lower()
+
+        match_reason = None
+        match_score = 0
+
+        # Check title + company match
+        if title and company:
+            title_match = title in job_title or job_title in title
+            company_match = company in job_company or job_company in company
+
+            # Word-based similarity for title
+            title_words = set(title.split())
+            job_title_words = set(job_title.split())
+            title_overlap = len(title_words & job_title_words) / max(len(title_words), 1) if title_words else 0
+
+            if company_match and (title_match or title_overlap >= 0.5):
+                match_reason = 'Same company and similar title'
+                match_score = 100 if (title_match and company_match) else 80
+
+        # Check description similarity - only if company matches
+        # (different companies often have similar job descriptions for same roles)
+        if description and len(description) > 100 and not match_reason:
+            # First check if company matches
+            company_match = False
+            if company:
+                company_match = company in job_company or job_company in company
+                # Also check word overlap for company names (handles "Inc", "LLC" variations)
+                company_words = set(company.split())
+                job_company_words = set(job_company.split())
+                if company_words and job_company_words:
+                    company_overlap = len(company_words & job_company_words) / max(len(company_words), 1)
+                    if company_overlap >= 0.5:
+                        company_match = True
+
+            # Only check description similarity if company matches
+            if company_match:
+                # Extract significant phrases from description (first 500 chars)
+                desc_sample = description[:500]
+
+                # Look for unique phrases (5+ word sequences)
+                desc_words = desc_sample.split()
+                for i in range(len(desc_words) - 4):
+                    phrase = ' '.join(desc_words[i:i+5])
+                    if len(phrase) > 25 and phrase in job_desc:
+                        match_reason = 'Same company with similar description'
+                        match_score = 70
+                        break
+
+                # Also check for high word overlap in first part of description
+                if not match_reason:
+                    desc_word_set = set(desc_sample.split())
+                    job_desc_sample = job_desc[:500]
+                    job_desc_word_set = set(job_desc_sample.split())
+
+                    if desc_word_set and job_desc_word_set:
+                        overlap = len(desc_word_set & job_desc_word_set)
+                        overlap_ratio = overlap / min(len(desc_word_set), len(job_desc_word_set))
+
+                        if overlap_ratio > 0.6:
+                            match_reason = 'Same company with similar description'
+                            match_score = 60
+
+        if match_reason:
+            seen_ids.add(job.id)
+            duplicates.append({
+                'id': job.id,
+                'title': job.title,
+                'company': job.company,
+                'status': job.status,
+                'created_at': job.created_at.strftime('%Y-%m-%d') if job.created_at else None,
+                'has_application': job.application is not None,
+                'application_id': job.application.id if job.application else None,
+                'match_reason': match_reason,
+                'match_score': match_score
+            })
+
+    # Sort by match score (highest first)
+    duplicates.sort(key=lambda x: x['match_score'], reverse=True)
+
+    return jsonify({'duplicates': duplicates})
+
+
 @app.route('/jobs/add', methods=['POST'])
 def add_job_post():
     """Create a job from manual entry."""
-    import json
     from job_parser import parse_job_description
 
     title = request.form.get('title', '').strip()
@@ -328,12 +517,49 @@ def job_detail(id):
             months = days // 30
             job_age = f"{months} months ago"
 
+    # Load existing document content for preview if application exists
+    resume_html = ''
+    cover_letter_html = ''
+    if job.application:
+        log.debug(f"Application found for job {id}, resume_md: {job.application.resume_md}")
+        if job.application.resume_md:
+            log.debug(f"Resume path exists check: {os.path.exists(job.application.resume_md)}")
+            if os.path.exists(job.application.resume_md):
+                with open(job.application.resume_md, 'r', encoding='utf-8') as f:
+                    resume_content = f.read()
+                resume_preview = strip_html_for_preview(resume_content)
+                resume_html = markdown.markdown(resume_preview, extensions=['tables', 'nl2br'])
+                log.debug(f"Resume HTML generated: {len(resume_html)} chars")
+
+        log.debug(f"Cover letter_md: {job.application.cover_letter_md}")
+        if job.application.cover_letter_md:
+            log.debug(f"Cover letter path exists check: {os.path.exists(job.application.cover_letter_md)}")
+            if os.path.exists(job.application.cover_letter_md):
+                with open(job.application.cover_letter_md, 'r', encoding='utf-8') as f:
+                    cover_letter_content = f.read()
+                cover_letter_preview = strip_html_for_preview(cover_letter_content)
+                cover_letter_html = markdown.markdown(cover_letter_preview, extensions=['nl2br'])
+                log.debug(f"Cover letter HTML generated: {len(cover_letter_html)} chars")
+
     return render_template('job_detail.html',
                            job=job,
                            html_description=html_description,
                            master_resume=master_resume,
                            ai_config=ai_config,
-                           job_age=job_age)
+                           job_age=job_age,
+                           resume_html=resume_html,
+                           cover_letter_html=cover_letter_html)
+
+
+@app.route('/jobs/<int:id>/description')
+def job_description(id):
+    """Get job description as JSON (for hover preview)."""
+    job = Job.query.get_or_404(id)
+    return jsonify({
+        'description': job.description or '',
+        'title': job.title,
+        'company': job.company
+    })
 
 
 @app.route('/jobs/<int:id>/delete', methods=['POST'])
@@ -404,7 +630,7 @@ def tailor_job(id):
         return redirect(url_for('settings'))
 
     # Claude CLI doesn't need an API key, others do
-    if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+    if ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key:
         log.warning("No API key configured for non-CLI provider")
         flash('Please configure AI API key first', 'error')
         return redirect(url_for('settings'))
@@ -513,7 +739,16 @@ def tailor_job(id):
 
 @app.route('/jobs/<int:id>/tailor-stream')
 def tailor_job_stream(id):
-    """Generate tailored resume and cover letter with SSE progress updates."""
+    """
+    Generate tailored resume and cover letter with Server-Sent Events (SSE) progress.
+
+    This endpoint streams progress updates to the client via SSE:
+    - {"status": "message"} - Progress updates shown in button
+    - {"redirect": "/path"} - Final redirect after completion
+    - {"error": "message"} - Error occurred, abort
+
+    Flow: Init AI -> Tailor resume -> Generate cover letter -> Convert to PDF -> Save
+    """
     from ai_service import get_ai_provider
     from document_gen import save_application_documents, extract_applicant_info, get_application_folder_name
 
@@ -542,7 +777,7 @@ def tailor_job_stream(id):
                 yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
                 return
 
-            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+            if ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key:
                 yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
                 return
 
@@ -668,7 +903,7 @@ def tailor_resume_stream(id):
                 yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
                 return
 
-            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+            if ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key:
                 yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
                 return
 
@@ -776,7 +1011,7 @@ def tailor_cover_letter_stream(id):
                 yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
                 return
 
-            if ai_config.provider != 'claude-cli' and not ai_config.api_key:
+            if ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key:
                 yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
                 return
 
@@ -892,6 +1127,65 @@ def application_detail(id):
                            cover_letter_content=cover_letter_content,
                            resume_html=resume_html,
                            cover_letter_html=cover_letter_html)
+
+
+@app.route('/applications/<int:id>/chat', methods=['POST'])
+def application_chat(id):
+    """AI chat for application assistance."""
+    from ai_service import get_ai_provider
+    from claude_cli import ClaudeCLIProvider
+    from bs4 import BeautifulSoup
+
+    application = Application.query.get_or_404(id)
+
+    data = request.get_json()
+    messages = data.get('messages', [])
+    include_job_desc = data.get('include_job_desc', False)
+
+    if not messages:
+        return jsonify({'error': 'No messages provided'}), 400
+
+    # Get AI config
+    ai_config = AIConfig.query.filter_by(is_active=True).first()
+    if not ai_config:
+        return jsonify({'error': 'AI not configured'}), 400
+
+    try:
+        # Get AI provider
+        if ai_config.provider == 'claude-cli':
+            ai = ClaudeCLIProvider(ai_config.model_name)
+        else:
+            ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name)
+
+        # Build context with job description and resume
+        context_parts = []
+
+        if include_job_desc and application.job.description:
+            raw_desc = application.job.description
+            job_desc_text = BeautifulSoup(raw_desc, 'html.parser').get_text()
+            context_parts.append(f"JOB DESCRIPTION:\n{job_desc_text}")
+
+        # Always include resume if available
+        if application.resume_md and os.path.exists(application.resume_md):
+            with open(application.resume_md, 'r', encoding='utf-8') as f:
+                resume_content = f.read()
+            # Strip HTML from resume for cleaner context
+            resume_text = strip_html_for_preview(resume_content)
+            context_parts.append(f"CANDIDATE RESUME:\n{resume_text}")
+
+        context = "\n\n".join(context_parts) if context_parts else None
+        if context:
+            log.debug(f"Chat context length: {len(context)} chars")
+
+        # Call AI
+        log.debug(f"Calling AI chat with {len(messages)} messages, context: {'Yes' if context else 'No'}")
+        response = ai.chat(messages, context)
+
+        return jsonify({'response': response})
+
+    except Exception as e:
+        log.error(f"Chat error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/applications/<int:id>/update', methods=['POST'])
@@ -1140,6 +1434,54 @@ def test_settings():
             except subprocess.TimeoutExpired:
                 return jsonify({'success': False, 'error': 'Claude CLI timed out'})
 
+        if config.provider == 'ollama':
+            # Test Ollama connection
+            from ai_service import OllamaProvider
+            import requests
+
+            base_url = config.api_key or 'http://localhost:11434'
+            try:
+                # Check if Ollama is running
+                if not OllamaProvider.is_available(base_url):
+                    return jsonify({'success': False, 'error': f'Ollama server not responding at {base_url}'})
+
+                # Check if the specified model is available
+                models = OllamaProvider.list_models(base_url)
+                model_names = [m['name'] for m in models]
+                if config.model_name and config.model_name not in model_names:
+                    # Also check without tag (e.g., "llama3.2" matches "llama3.2:latest")
+                    model_base = config.model_name.split(':')[0]
+                    matching = [m for m in model_names if m.startswith(model_base)]
+                    if not matching:
+                        return jsonify({
+                            'success': False,
+                            'error': f'Model "{config.model_name}" not found. Available: {", ".join(model_names[:5])}'
+                        })
+
+                # Test generation with a simple prompt
+                response = requests.post(
+                    f"{base_url.rstrip('/')}/api/generate",
+                    json={
+                        "model": config.model_name or "llama3.2",
+                        "prompt": "Reply with just: OK",
+                        "stream": False,
+                        "options": {"num_predict": 10}
+                    },
+                    timeout=30
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get('response'):
+                    return jsonify({'success': True, 'message': f'Ollama working (model: {config.model_name})'})
+                else:
+                    return jsonify({'success': False, 'error': 'Ollama returned empty response'})
+
+            except requests.exceptions.ConnectionError:
+                return jsonify({'success': False, 'error': f'Cannot connect to Ollama at {base_url}. Is it running?'})
+            except requests.exceptions.Timeout:
+                return jsonify({'success': False, 'error': 'Ollama request timed out'})
+
         # For API-based providers, require API key
         if not config.api_key:
             return jsonify({'success': False, 'error': 'No API key configured'})
@@ -1187,20 +1529,26 @@ def save_boards():
         flash('Boards list cannot be empty', 'danger')
         return redirect(url_for('settings'))
 
-    # Split by newlines or commas, clean up
+    # Split by newlines, preserve comments (lines starting with #)
     boards = []
-    for line in boards_text.replace(',', '\n').split('\n'):
-        board = line.strip().lower()
-        if board:
-            boards.append(board)
+    active_count = 0
+    for line in boards_text.split('\n'):
+        line = line.strip()
+        if line:
+            # Preserve comments but convert board names to lowercase
+            if line.startswith('#'):
+                boards.append(line)  # Keep comment as-is
+            else:
+                boards.append(line.lower())
+                active_count += 1
 
-    if not boards:
-        flash('Boards list cannot be empty', 'danger')
+    if active_count == 0:
+        flash('At least one active board is required (non-commented)', 'danger')
         return redirect(url_for('settings'))
 
     # Save to database
     AppSettings.set('greenhouse_boards', boards)
-    flash(f'Saved {len(boards)} boards', 'success')
+    flash(f'Saved {active_count} active boards ({len(boards) - active_count} commented out)', 'success')
     return redirect(url_for('settings'))
 
 
@@ -1247,6 +1595,20 @@ def restore_default_prompts():
 
     flash('Restored default prompts', 'success')
     return redirect(url_for('settings'))
+
+
+@app.route('/settings/ollama-models')
+def get_ollama_models():
+    """Get list of available Ollama models."""
+    from ai_service import OllamaProvider
+
+    base_url = request.args.get('base_url', 'http://localhost:11434')
+    models = OllamaProvider.list_models(base_url)
+
+    return jsonify({
+        'available': len(models) > 0,
+        'models': models
+    })
 
 
 # ============ Run ============

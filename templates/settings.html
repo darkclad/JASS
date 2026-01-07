@@ -17,6 +17,9 @@
                     <div class="mb-3">
                         <label class="form-label">AI Provider</label>
                         <select name="provider" class="form-select" id="providerSelect">
+                            <option value="ollama" {% if active_config and active_config.provider == 'ollama' %}selected{% endif %}>
+                                Ollama (Local)
+                            </option>
                             <option value="claude-cli" {% if active_config and active_config.provider == 'claude-cli' %}selected{% endif %}>
                                 Claude CLI (Local)
                             </option>
@@ -31,16 +34,28 @@
                     </div>
 
                     <div class="mb-3" id="apiKeyGroup">
-                        <label class="form-label">API Key</label>
+                        <label class="form-label" id="apiKeyLabel">API Key</label>
                         <input type="password" name="api_key" class="form-control" id="apiKeyInput"
                                value="{{ active_config.api_key if active_config else '' }}"
                                placeholder="sk-... or your API key">
-                        <div class="form-text">Your API key is stored locally and never shared.</div>
+                        <div class="form-text" id="apiKeyHelp">Your API key is stored locally and never shared.</div>
+                    </div>
+
+                    <div class="mb-3" id="ollamaUrlGroup" style="display: none;">
+                        <label class="form-label">Ollama Server URL</label>
+                        <input type="text" name="ollama_url" class="form-control" id="ollamaUrlInput"
+                               value="{{ active_config.api_key if active_config and active_config.provider == 'ollama' else 'http://localhost:11434' }}"
+                               placeholder="http://localhost:11434">
+                        <div class="form-text">Default: http://localhost:11434</div>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label">Model</label>
                         <select name="model_name" class="form-select" id="modelSelect">
+                            <!-- Ollama models (dynamically loaded) -->
+                            <optgroup label="Ollama Models" class="ollama-models" id="ollamaModelsGroup">
+                                <option value="" disabled>Loading models...</option>
+                            </optgroup>
                             <!-- Claude CLI models -->
                             <optgroup label="Claude CLI" class="claude-cli-models">
                                 <option value="claude-sonnet-4-20250514" {% if active_config and active_config.model_name == 'claude-sonnet-4-20250514' %}selected{% endif %}>
@@ -78,6 +93,7 @@
                                 </option>
                             </optgroup>
                         </select>
+                        <div class="form-text" id="modelHelp"></div>
                     </div>
 
                     <button type="submit" class="btn btn-primary">
@@ -93,7 +109,7 @@
                 <i class="bi bi-plug"></i> Test Connection
             </div>
             <div class="card-body">
-                {% if active_config and (active_config.api_key or active_config.provider == 'claude-cli') %}
+                {% if active_config and (active_config.api_key or active_config.provider in ('claude-cli', 'ollama')) %}
                 <p class="text-muted small">
                     Current: <strong>{{ active_config.provider }}</strong> / <strong>{{ active_config.model_name }}</strong>
                 </p>
@@ -113,9 +129,19 @@
         <!-- Instructions -->
         <div class="card mb-4">
             <div class="card-header">
-                <i class="bi bi-info-circle"></i> Getting API Keys
+                <i class="bi bi-info-circle"></i> Provider Setup
             </div>
             <div class="card-body">
+                <h6>Ollama (Local - Recommended)</h6>
+                <ol class="small">
+                    <li>Install Ollama from <a href="https://ollama.ai" target="_blank">ollama.ai</a></li>
+                    <li>Run <code>ollama pull llama3.2</code> or another model</li>
+                    <li>Start Ollama (runs on localhost:11434 by default)</li>
+                    <li>Select your model from the dropdown</li>
+                </ol>
+
+                <hr>
+
                 <h6>Claude (Anthropic)</h6>
                 <ol class="small">
                     <li>Go to <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a></li>
@@ -153,7 +179,7 @@
                         <textarea name="boards" class="form-control font-monospace" rows="8"
                                   style="font-size: 0.85rem;" required>{% for board in boards %}{{ board }}{% if not loop.last %}
 {% endif %}{% endfor %}</textarea>
-                        <div class="form-text">Enter one board name per line (e.g., sentinellabs, cloudflare)</div>
+                        <div class="form-text">One board per line. Prefix with <code>#</code> to comment out (disable temporarily).</div>
                     </div>
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">
@@ -228,19 +254,73 @@
 
 {% block extra_js %}
 <script>
+// Store the current model for Ollama
+const currentOllamaModel = '{{ active_config.model_name if active_config and active_config.provider == "ollama" else "" }}';
+
+// Load Ollama models from the server
+async function loadOllamaModels() {
+    const ollamaGroup = document.getElementById('ollamaModelsGroup');
+    const baseUrl = document.getElementById('ollamaUrlInput').value || 'http://localhost:11434';
+    const modelHelp = document.getElementById('modelHelp');
+
+    ollamaGroup.innerHTML = '<option value="" disabled>Loading models...</option>';
+
+    try {
+        const response = await fetch(`/settings/ollama-models?base_url=${encodeURIComponent(baseUrl)}`);
+        const data = await response.json();
+
+        if (data.available && data.models.length > 0) {
+            ollamaGroup.innerHTML = '';
+            data.models.forEach((model, index) => {
+                const option = document.createElement('option');
+                option.value = model.name;
+                option.textContent = model.size ? `${model.name} (${model.size})` : model.name;
+                // Select the current model or first one
+                if (model.name === currentOllamaModel || (index === 0 && !currentOllamaModel)) {
+                    option.selected = true;
+                }
+                ollamaGroup.appendChild(option);
+            });
+            modelHelp.textContent = `${data.models.length} model(s) available`;
+            modelHelp.className = 'form-text text-success';
+        } else {
+            ollamaGroup.innerHTML = '<option value="" disabled>No models found</option>';
+            modelHelp.textContent = 'No models found. Run "ollama pull llama3.2" to download a model.';
+            modelHelp.className = 'form-text text-warning';
+        }
+    } catch (err) {
+        ollamaGroup.innerHTML = '<option value="" disabled>Error loading models</option>';
+        modelHelp.textContent = 'Cannot connect to Ollama. Is it running?';
+        modelHelp.className = 'form-text text-danger';
+    }
+}
+
 // Update UI based on provider selection
 function updateProviderUI() {
     const provider = document.getElementById('providerSelect').value;
     const apiKeyGroup = document.getElementById('apiKeyGroup');
+    const ollamaUrlGroup = document.getElementById('ollamaUrlGroup');
     const providerHelp = document.getElementById('providerHelp');
+    const modelHelp = document.getElementById('modelHelp');
 
-    // Show/hide API key field
-    if (provider === 'claude-cli') {
+    // Show/hide API key field and Ollama URL field
+    if (provider === 'ollama') {
         apiKeyGroup.style.display = 'none';
+        ollamaUrlGroup.style.display = 'block';
+        providerHelp.textContent = 'Uses locally running Ollama server. No API key needed.';
+        loadOllamaModels();
+    } else if (provider === 'claude-cli') {
+        apiKeyGroup.style.display = 'none';
+        ollamaUrlGroup.style.display = 'none';
         providerHelp.textContent = 'Uses locally installed Claude CLI. No API key needed.';
+        modelHelp.textContent = '';
+        modelHelp.className = 'form-text';
     } else {
         apiKeyGroup.style.display = 'block';
+        ollamaUrlGroup.style.display = 'none';
         providerHelp.textContent = '';
+        modelHelp.textContent = '';
+        modelHelp.className = 'form-text';
     }
 
     // Show/hide model options
@@ -248,10 +328,13 @@ function updateProviderUI() {
         g.style.display = g.classList.contains(provider + '-models') ? '' : 'none';
     });
 
-    // Select first option of visible group
-    const visibleGroup = document.querySelector(`#modelSelect optgroup.${provider}-models`);
-    if (visibleGroup) {
-        visibleGroup.querySelector('option').selected = true;
+    // Select first option of visible group (except for ollama which is handled by loadOllamaModels)
+    if (provider !== 'ollama') {
+        const visibleGroup = document.querySelector(`#modelSelect optgroup.${provider}-models`);
+        if (visibleGroup) {
+            const firstOption = visibleGroup.querySelector('option');
+            if (firstOption) firstOption.selected = true;
+        }
     }
 }
 
@@ -260,6 +343,21 @@ updateProviderUI();
 
 // Update on provider change
 document.getElementById('providerSelect')?.addEventListener('change', updateProviderUI);
+
+// Reload models when Ollama URL changes
+document.getElementById('ollamaUrlInput')?.addEventListener('change', function() {
+    if (document.getElementById('providerSelect').value === 'ollama') {
+        loadOllamaModels();
+    }
+});
+
+// Handle form submission - copy Ollama URL to api_key field
+document.querySelector('form[action*="save_settings"]')?.addEventListener('submit', function(e) {
+    const provider = document.getElementById('providerSelect').value;
+    if (provider === 'ollama') {
+        document.getElementById('apiKeyInput').value = document.getElementById('ollamaUrlInput').value;
+    }
+});
 
 async function testConnection() {
     const btn = document.getElementById('testBtn');
@@ -273,7 +371,7 @@ async function testConnection() {
         const data = await response.json();
 
         if (data.success) {
-            result.innerHTML = '<div class="alert alert-success"><i class="bi bi-check-circle"></i> Connection successful!</div>';
+            result.innerHTML = '<div class="alert alert-success"><i class="bi bi-check-circle"></i> ' + data.message + '</div>';
         } else {
             result.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${data.error}</div>`;
         }

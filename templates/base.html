@@ -70,6 +70,17 @@
             background: #1a1a2e;
             border-color: #1a1a2e;
         }
+        /* Custom light green button */
+        .btn-light-green {
+            background: #d4edda;
+            border-color: #198754;
+            color: #198754;
+        }
+        .btn-light-green:hover {
+            background: #c3e6cb;
+            border-color: #157347;
+            color: #157347;
+        }
         .status-badge {
             font-size: 0.75rem;
             padding: 0.25rem 0.5rem;
@@ -103,6 +114,51 @@
             width: 1rem;
             height: 1rem;
             border-width: 2px;
+        }
+
+        /* Job description preview tooltip */
+        .job-preview-tooltip {
+            position: absolute;
+            z-index: 1000;
+            max-width: 800px;
+            max-height: 300px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            padding: 1rem;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            display: none;
+        }
+        .job-preview-tooltip.visible {
+            display: block;
+        }
+        .job-preview-tooltip h1, .job-preview-tooltip h2, .job-preview-tooltip h3 {
+            font-size: 0.95rem;
+            font-weight: bold;
+            margin-top: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+        .job-preview-tooltip h1:first-child, .job-preview-tooltip h2:first-child, .job-preview-tooltip h3:first-child {
+            margin-top: 0;
+        }
+        .job-preview-tooltip ul, .job-preview-tooltip ol {
+            padding-left: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .job-preview-tooltip li {
+            margin-bottom: 0.25rem;
+        }
+        .job-preview-tooltip p {
+            margin-bottom: 0.5rem;
+        }
+        .job-title-hover {
+            cursor: pointer;
+        }
+        .job-preview-tooltip:hover {
+            display: block;
         }
     </style>
     {% block extra_css %}{% endblock %}
@@ -181,6 +237,111 @@
                 if (btn) setLoading(btn, true);
             });
         });
+
+        /**
+         * Setup an SSE-based button that shows progress and redirects on completion.
+         *
+         * Expected button HTML structure:
+         *   <button data-tailor-url="/endpoint">
+         *     <span class="btn-text">Button Label</span>
+         *     <span class="btn-status" style="display:none;"></span>
+         *     <span class="spinner-border" role="status"></span>
+         *   </button>
+         *
+         * SSE endpoint should emit JSON events:
+         *   {"status": "message"} - Updates btn-status text with elapsed timer
+         *   {"redirect": "/path"} - Navigates to URL on completion
+         *   {"error": "message"} - Shows alert and resets buttons
+         *
+         * @param {string} btnId - The button element ID
+         * @param {string[]} allBtnIds - Array of all related button IDs to disable during loading
+         * @param {string|null} confirmMsg - Optional confirmation message before starting
+         */
+        function setupSSEButton(btnId, allBtnIds, confirmMsg = null) {
+            document.getElementById(btnId)?.addEventListener('click', function() {
+                if (confirmMsg && !confirm(confirmMsg)) return;
+
+                const btn = this;
+                const url = btn.dataset.tailorUrl;
+                const btnText = btn.querySelector('.btn-text');
+                const btnStatus = btn.querySelector('.btn-status');
+                const spinner = btn.querySelector('.spinner-border');
+
+                // Show loading state with status text
+                btn.disabled = true;
+                btn.classList.add('loading');
+                document.body.classList.add('loading');
+                btnText.style.display = 'none';
+                btnStatus.style.display = 'inline';
+                spinner.style.display = 'inline-block';
+
+                // Disable all other related buttons
+                allBtnIds.forEach(id => {
+                    const otherBtn = document.getElementById(id);
+                    if (otherBtn && otherBtn !== btn) otherBtn.disabled = true;
+                });
+
+                // Start timer (resets on each stage)
+                let stageStartTime = Date.now();
+                let currentStatus = 'Starting...';
+                let timerInterval;
+
+                function updateStatus() {
+                    const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
+                    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+                }
+
+                function resetButtons() {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                    document.body.classList.remove('loading');
+                    btnText.style.display = 'inline';
+                    btnStatus.style.display = 'none';
+                    spinner.style.display = 'none';
+                    allBtnIds.forEach(id => {
+                        const otherBtn = document.getElementById(id);
+                        if (otherBtn) otherBtn.disabled = false;
+                    });
+                }
+
+                updateStatus();
+                timerInterval = setInterval(updateStatus, 1000);
+
+                // Connect to SSE endpoint
+                const eventSource = new EventSource(url);
+
+                eventSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+
+                    if (data.error) {
+                        clearInterval(timerInterval);
+                        eventSource.close();
+                        alert('Error: ' + data.error);
+                        resetButtons();
+                        return;
+                    }
+
+                    if (data.status) {
+                        currentStatus = data.status;
+                        stageStartTime = Date.now();  // Reset timer for new stage
+                        updateStatus();
+                    }
+
+                    if (data.redirect) {
+                        clearInterval(timerInterval);
+                        eventSource.close();
+                        window.location.href = data.redirect;
+                    }
+                };
+
+                eventSource.onerror = function() {
+                    clearInterval(timerInterval);
+                    eventSource.close();
+                    alert('Connection lost. Please try again.');
+                    resetButtons();
+                };
+            });
+        }
     </script>
     {% block extra_js %}{% endblock %}
 </body>

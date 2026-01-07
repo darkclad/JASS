@@ -1,0 +1,36 @@
+About the job
+Software Engineer 
+
+Remote Role | Must reside in Ohio, Texas, Florida, Nevada Georgia 
+
+Salary: Up to 125k 
+
+
+
+Why You Will Love Working Here as a .NET C# Software Engineer
+
+ • Meaningful Impact: Help develop and enhance applications that power one of Ohio’s fastest-growing retail platforms
+ • Modern Tech Stack: Work daily with .NET C#, Entity Framework, LINQ, React, Vue, SQL, and Azure
+ • Collaborative Culture: Be part of a team that values teamwork, innovation, and professional growth
+
+
+What You Will Do as a .NET C# Software Engineer
+
+ • Design, develop, and maintain web applications and APIs used across large scale online operations
+ • Work closely with engineering and business teams to define requirements and deliver reliable software solutions
+ • Participate in peer code reviews, contribute ideas, and help shape development best practices
+
+
+What We Are Looking For
+
+ • Experience: Three or more years for mid level or six or more years for senior level roles in .NET and C# development
+ • Strong understanding of Entity Framework, LINQ, SQL, and RESTful APIs
+ • Front End: Hands on experience with React or Vue in production environments
+ • Cloud: Experience deploying and supporting applications in Azure
+ • Team Mindset: Excellent communication skills and a desire to collaborate and learn
+
+
+Why Apply
+
+ • Remote position with occasional in person collaboration in Columbus Ohio
+ • Competitive compensation and comprehensive benefits

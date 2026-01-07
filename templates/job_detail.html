@@ -26,6 +26,29 @@
     .skill-badge {
         font-size: 0.75rem;
     }
+    .document-preview {
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 1rem;
+        background: #fff;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        font-size: 0.9rem;
+    }
+    .document-preview h1, .document-preview h2, .document-preview h3 {
+        font-size: 1.1rem;
+        font-weight: bold;
+        margin-top: 0.75rem;
+    }
+    .document-preview p {
+        margin-bottom: 0.5rem;
+    }
+    .preview-section .card-header {
+        cursor: pointer;
+    }
+    .preview-section .card-header:hover {
+        background-color: #e9ecef;
+    }
 </style>
 {% endblock %}
 
@@ -120,6 +143,43 @@
                 </div>
             </div>
         </div>
+
+        <!-- Document Previews -->
+        {% if resume_html or cover_letter_html %}
+        <div class="preview-section">
+            {% if resume_html %}
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center" data-bs-toggle="collapse" data-bs-target="#resumePreview">
+                    <span><i class="bi bi-file-person"></i> Tailored Resume</span>
+                    <i class="bi bi-chevron-down"></i>
+                </div>
+                <div class="collapse show" id="resumePreview">
+                    <div class="card-body">
+                        <div class="document-preview">
+                            {{ resume_html|safe }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if cover_letter_html %}
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center" data-bs-toggle="collapse" data-bs-target="#coverLetterPreview">
+                    <span><i class="bi bi-envelope"></i> Cover Letter</span>
+                    <i class="bi bi-chevron-down"></i>
+                </div>
+                <div class="collapse show" id="coverLetterPreview">
+                    <div class="card-body">
+                        <div class="document-preview">
+                            {{ cover_letter_html|safe }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 
     <!-- Sidebar -->
@@ -166,7 +226,7 @@
                     <i class="bi bi-exclamation-triangle"></i>
                     No master resume found. <a href="{{ url_for('resume') }}">Create one first</a>.
                 </div>
-                {% elif not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) %}
+                {% elif not ai_config or (ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key) %}
                 <div class="alert alert-warning mb-3">
                     <i class="bi bi-exclamation-triangle"></i>
                     AI not configured. <a href="{{ url_for('settings') }}">Configure AI settings</a>.
@@ -179,20 +239,27 @@
                 {% endif %}
 
                 <button type="button" class="btn btn-primary w-100 mb-2" id="tailorResumeBtn"
-                        {% if not master_resume or not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) %}disabled{% endif %}
+                        {% if not master_resume or not ai_config or (ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key) %}disabled{% endif %}
                         data-tailor-url="{{ url_for('tailor_resume_stream', id=job.id) }}">
-                    <span class="btn-text"><i class="bi bi-file-person"></i> Generate Tailored Resume</span>
+                    <span class="btn-text"><i class="bi bi-file-person"></i> Tailor Resume</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
-                <button type="button" class="btn btn-primary w-100" id="tailorCoverLetterBtn"
-                        {% if not master_resume or not ai_config or (ai_config.provider != 'claude-cli' and not ai_config.api_key) or not job.application or not job.application.resume_md %}disabled{% endif %}
-                        data-tailor-url="{{ url_for('tailor_cover_letter_stream', id=job.id) }}"
-                        {% if not job.application or not job.application.resume_md %}title="Generate a resume first"{% endif %}>
+                <button type="button" class="btn btn-primary w-100 mb-2" id="tailorCoverLetterBtn"
+                        {% if not master_resume or not ai_config or (ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key) %}disabled{% endif %}
+                        data-tailor-url="{{ url_for('tailor_cover_letter_stream', id=job.id) }}">
                     <span class="btn-text"><i class="bi bi-envelope"></i> Generate Cover Letter</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
+                <button type="button" class="btn btn-primary w-100 mb-3" id="tailorBothBtn"
+                        {% if not master_resume or not ai_config or (ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key) %}disabled{% endif %}
+                        data-tailor-url="{{ url_for('tailor_job_stream', id=job.id) }}">
+                    <span class="btn-text"><i class="bi bi-arrow-repeat"></i> Generate Both</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                <hr class="my-2">
             </div>
         </div>
         {% endif %}
@@ -206,6 +273,13 @@
                 {% if job.application %}
                 <a href="{{ url_for('application_detail', id=job.application.id) }}" class="btn btn-success w-100 mb-2">
                     <i class="bi bi-file-earmark-check"></i> View Application
+                    {% if job.application.resume_md and job.application.cover_letter_md %}
+                    <small class="d-block">(Resume + Cover Letter)</small>
+                    {% elif job.application.resume_md %}
+                    <small class="d-block">(Resume only)</small>
+                    {% elif job.application.cover_letter_md %}
+                    <small class="d-block">(Cover Letter only)</small>
+                    {% endif %}
                 </a>
                 {% endif %}
 
@@ -245,92 +319,13 @@
 
 {% block extra_js %}
 <script>
-function setupTailorButton(btnId) {
-    document.getElementById(btnId)?.addEventListener('click', function() {
-        const btn = this;
-        const url = btn.dataset.tailorUrl;
-        const btnText = btn.querySelector('.btn-text');
-        const btnStatus = btn.querySelector('.btn-status');
-        const spinner = btn.querySelector('.spinner-border');
+// Only show override warning if document already exists
+const hasResume = {{ 'true' if job.application and job.application.resume_md else 'false' }};
+const hasCoverLetter = {{ 'true' if job.application and job.application.cover_letter_md else 'false' }};
+const tailorBtnIds = ['tailorResumeBtn', 'tailorCoverLetterBtn', 'tailorBothBtn'];
 
-        // Show loading state with status text
-        btn.disabled = true;
-        btn.classList.add('loading');
-        document.body.classList.add('loading');
-        btnText.style.display = 'none';
-        btnStatus.style.display = 'inline';
-        spinner.style.display = 'inline-block';
-
-        // Disable the other button too
-        const otherBtn = btnId === 'tailorResumeBtn'
-            ? document.getElementById('tailorCoverLetterBtn')
-            : document.getElementById('tailorResumeBtn');
-        if (otherBtn) otherBtn.disabled = true;
-
-        // Start timer (resets on each stage)
-        let stageStartTime = Date.now();
-        let currentStatus = 'Starting...';
-        let timerInterval;
-
-        function updateStatus() {
-            const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
-            btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
-        }
-
-        updateStatus();
-        timerInterval = setInterval(updateStatus, 1000);
-
-        // Connect to SSE endpoint
-        const eventSource = new EventSource(url);
-
-        eventSource.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-
-            if (data.error) {
-                clearInterval(timerInterval);
-                eventSource.close();
-                alert('Error: ' + data.error);
-                // Reset button
-                btn.disabled = false;
-                btn.classList.remove('loading');
-                document.body.classList.remove('loading');
-                btnText.style.display = 'inline';
-                btnStatus.style.display = 'none';
-                spinner.style.display = 'none';
-                if (otherBtn && !otherBtn.hasAttribute('title')) otherBtn.disabled = false;
-                return;
-            }
-
-            if (data.status) {
-                currentStatus = data.status;
-                stageStartTime = Date.now();  // Reset timer for new stage
-                updateStatus();
-            }
-
-            if (data.redirect) {
-                clearInterval(timerInterval);
-                eventSource.close();
-                window.location.href = data.redirect;
-            }
-        };
-
-        eventSource.onerror = function() {
-            clearInterval(timerInterval);
-            eventSource.close();
-            alert('Connection lost. Please try again.');
-            // Reset button
-            btn.disabled = false;
-            btn.classList.remove('loading');
-            document.body.classList.remove('loading');
-            btnText.style.display = 'inline';
-            btnStatus.style.display = 'none';
-            spinner.style.display = 'none';
-            if (otherBtn && !otherBtn.hasAttribute('title')) otherBtn.disabled = false;
-        };
-    });
-}
-
-setupTailorButton('tailorResumeBtn');
-setupTailorButton('tailorCoverLetterBtn');
+setupSSEButton('tailorResumeBtn', tailorBtnIds, hasResume ? 'This will replace the existing resume. Continue?' : null);
+setupSSEButton('tailorCoverLetterBtn', tailorBtnIds, hasCoverLetter ? 'This will replace the existing cover letter. Continue?' : null);
+setupSSEButton('tailorBothBtn', tailorBtnIds, (hasResume || hasCoverLetter) ? 'This will replace existing documents. Continue?' : null);
 </script>
 {% endblock %}

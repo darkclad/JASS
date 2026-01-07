@@ -2,9 +2,35 @@
 
 {% block title %}Applications - JASS{% endblock %}
 
+{% block extra_css %}
+<style>
+    .sortable {
+        cursor: pointer;
+        user-select: none;
+    }
+    .sortable:hover {
+        background-color: #f8f9fa;
+    }
+    .sortable::after {
+        content: '\F282';
+        font-family: 'bootstrap-icons';
+        margin-left: 0.5rem;
+        opacity: 0.3;
+    }
+    .sortable.asc::after {
+        content: '\F148';
+        opacity: 1;
+    }
+    .sortable.desc::after {
+        content: '\F128';
+        opacity: 1;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1><i class="bi bi-file-earmark-text"></i> Applications</h1>
+    <h1><i class="bi bi-file-earmark-text"></i> Applications ({{ applications|length }})</h1>
     <div>
         <a href="{{ url_for('add_job') }}" class="btn btn-success me-2">
             <i class="bi bi-plus-circle"></i> Add Job
@@ -21,17 +47,20 @@
         <table class="table table-hover mb-0">
             <thead>
                 <tr>
-                    <th>Job</th>
-                    <th>Company</th>
-                    <th>Status</th>
-                    <th>Tailored / Applied</th>
+                    <th class="sortable" data-sort="job">Job</th>
+                    <th class="sortable" data-sort="company">Company</th>
+                    <th class="sortable" data-sort="status">Status</th>
+                    <th class="sortable desc" data-sort="date">Date</th>
                     <th>Documents</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for app in applications %}
-                <tr>
+                <tr data-job="{{ app.job.title|lower }}"
+                    data-company="{{ app.job.company|lower }}"
+                    data-status="{{ app.status }}"
+                    data-date="{{ (app.applied_at or app.tailored_at or app.created_at).strftime('%Y%m%d%H%M') if (app.applied_at or app.tailored_at or app.created_at) else '0' }}">
                     <td>
                         <a href="{{ url_for('application_detail', id=app.id) }}" class="text-decoration-none fw-bold">
                             {{ app.job.title }}
@@ -95,4 +124,61 @@
     <p>Use the buttons above to add jobs manually or search Greenhouse</p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.sortable').forEach(header => {
+    header.addEventListener('click', function() {
+        const table = this.closest('table');
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const sortKey = this.dataset.sort;
+
+        // Determine sort direction
+        const isAsc = this.classList.contains('asc');
+        const isDesc = this.classList.contains('desc');
+        let direction = 'asc';
+
+        if (!isAsc && !isDesc) {
+            direction = 'asc';
+        } else if (isAsc) {
+            direction = 'desc';
+        } else {
+            direction = 'asc';
+        }
+
+        // Remove sort classes from all headers
+        table.querySelectorAll('.sortable').forEach(h => {
+            h.classList.remove('asc', 'desc');
+        });
+
+        // Add sort class to current header
+        this.classList.add(direction);
+
+        // Sort rows
+        rows.sort((a, b) => {
+            let aVal = a.dataset[sortKey] || '';
+            let bVal = b.dataset[sortKey] || '';
+
+            // For date, compare numerically
+            if (sortKey === 'date') {
+                aVal = parseInt(aVal) || 0;
+                bVal = parseInt(bVal) || 0;
+                return direction === 'asc' ? aVal - bVal : bVal - aVal;
+            }
+
+            // For text, compare alphabetically
+            if (direction === 'asc') {
+                return aVal.localeCompare(bVal);
+            } else {
+                return bVal.localeCompare(aVal);
+            }
+        });
+
+        // Re-append sorted rows
+        rows.forEach(row => tbody.appendChild(row));
+    });
+});
+</script>
 {% endblock %}

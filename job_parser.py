@@ -46,7 +46,34 @@ def parse_job_description(description: str, title: str = '', location: str = '')
         return result
 
     # Detect source format and use specialized parser
-    if is_linkedin_format(description):
+    if is_dice_format(description):
+        result['source_format'] = 'dice'
+        dice_data = parse_dice_header(description)
+        result['extracted_company'] = dice_data.get('company')
+        result['extracted_title'] = dice_data.get('title')
+        result['extracted_location'] = dice_data.get('location')
+        result['cleaned_description'] = dice_data.get('cleaned_description')
+        result['salary_text'] = dice_data.get('salary_text')
+        result['salary_min'] = dice_data.get('salary_min')
+        result['salary_max'] = dice_data.get('salary_max')
+        result['posted_at'] = dice_data.get('posted_at')
+        if dice_data.get('is_remote') is not None:
+            result['is_remote'] = dice_data.get('is_remote')
+
+    elif is_monster_format(description):
+        result['source_format'] = 'monster'
+        monster_data = parse_monster_header(description)
+        result['extracted_company'] = monster_data.get('company')
+        result['extracted_title'] = monster_data.get('title')
+        result['extracted_location'] = monster_data.get('location')
+        result['cleaned_description'] = monster_data.get('cleaned_description')
+        result['salary_text'] = monster_data.get('salary_text')
+        result['salary_min'] = monster_data.get('salary_min')
+        result['salary_max'] = monster_data.get('salary_max')
+        if monster_data.get('is_remote') is not None:
+            result['is_remote'] = monster_data.get('is_remote')
+
+    elif is_linkedin_format(description):
         result['source_format'] = 'linkedin'
         linkedin_data = parse_linkedin_header(description)
         result['extracted_company'] = linkedin_data.get('company')
@@ -88,6 +115,427 @@ def parse_job_description(description: str, title: str = '', location: str = '')
               f"remote={result['is_remote']}, exp={result['experience_years']}, "
               f"skills={len(result['skills'])}, title={result['extracted_title']}, "
               f"company={result['extracted_company']}, location={result['extracted_location']}")
+
+    return result
+
+
+def is_dice_format(text: str) -> bool:
+    """Detect if text is copied from Dice job posting."""
+    indicators = [
+        'Dice Id:',
+        'Position Id:',
+        'Read Full Job Description',
+        'Report this job',
+        'Company Banner',
+        'Company Logo',
+        'Go to company profile',
+        'Posted \d+ days ago',
+        'Job Details',
+        'Additional Information',
+    ]
+    count = sum(1 for ind in indicators if ind in text or (ind.startswith('Posted') and re.search(ind, text)))
+    return count >= 2
+
+
+def parse_dice_header(text: str) -> Dict:
+    """
+    Parse Dice job posting format.
+
+    Dice format (typical):
+    Line 1: Job title
+    Line 2: Company name
+    Line 3: Location (City, State)
+    Line 4: Posted X days ago | Updated X hours ago
+    Line 5: Save
+    Line 6+: Company Banner, Company Logo, Company name (again)
+    "Overview" section with Remote/On Site/Full Time
+    "Skills" section with skill list
+    "Job Details" section with actual description
+    "Additional Information" with benefits and salary
+    Footer with Dice Id, Position Id
+    """
+    from datetime import datetime, timedelta
+
+    result = {
+        'company': None,
+        'title': None,
+        'location': None,
+        'is_remote': None,
+        'cleaned_description': None,
+        'salary_text': None,
+        'salary_min': None,
+        'salary_max': None,
+        'posted_at': None
+    }
+
+    lines = text.split('\n')
+
+    # Skip UI elements at the start
+    skip_start = ['options', 'menu', 'share', 'bookmark']
+
+    # First find the job title - usually in first few non-empty lines
+    title_line_idx = None
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        # Skip common UI elements
+        if line.lower() in skip_start:
+            continue
+        # Check if it looks like a job title
+        title_keywords = ['engineer', 'developer', 'manager', 'architect', 'lead', 'director',
+                          'analyst', 'scientist', 'designer', 'specialist', 'consultant',
+                          'administrator', 'coordinator', 'senior', 'junior', 'staff', 'sr', 'jr',
+                          'principal', 'programmer', 'security']
+        if any(kw in line.lower() for kw in title_keywords):
+            result['title'] = line
+            title_line_idx = i
+            break
+        # If first substantial line (not a skip pattern)
+        elif i < 5 and len(line) > 10 and len(line) < 150:
+            result['title'] = line
+            title_line_idx = i
+            break
+
+    # Find company name - it's typically the VERY NEXT non-empty line after the title
+    if title_line_idx is not None:
+        for i, line in enumerate(lines[title_line_idx + 1:], start=title_line_idx + 1):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+
+            # Skip common UI elements and status indicators
+            skip_patterns = ['save', 'posted', 'updated', 'company banner', 'company logo',
+                             'overview', 'remote', 'on site', 'full time', 'part time',
+                             'contract', 'skills', 'dice match', 'you\'re a', 'based on',
+                             'match details', 'options']
+            if any(skip in line_stripped.lower() for skip in skip_patterns):
+                continue
+
+            # Check it's not a location (has state abbreviation pattern)
+            if re.match(r'^[A-Za-z\s]+,\s*[A-Z]{2}$', line_stripped):
+                # This is the location, not the company - company should have come before
+                # Look backwards for company
+                continue
+
+            # Company name should be reasonably short and look like a name
+            # Common patterns: "Company Name", "Company Name, LLC", "Company Inc."
+            if len(line_stripped) > 2 and len(line_stripped) < 80:
+                # This should be the company - take the first valid line after title
+                result['company'] = line_stripped
+                break
+
+    # Find location - scan all early lines for "City, ST" pattern
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        # Stop looking once we hit these sections
+        if line_stripped in ['Overview', 'Skills', 'Job Details', 'Dice Match']:
+            break
+        # Location pattern: "City, ST" or "City, State"
+        if not result['location']:
+            loc_match = re.match(r'^([A-Za-z\s]+),\s*([A-Z]{2}|[A-Za-z]+)$', line_stripped)
+            if loc_match:
+                result['location'] = line_stripped
+
+    # Parse posted date - "Posted X days ago"
+    posted_match = re.search(r'Posted\s+(\d+)\s+(day|hour|week|month)s?\s+ago', text, re.IGNORECASE)
+    if posted_match:
+        num = int(posted_match.group(1))
+        unit = posted_match.group(2).lower()
+        now = datetime.utcnow()
+        if unit == 'hour':
+            result['posted_at'] = now - timedelta(hours=num)
+        elif unit == 'day':
+            result['posted_at'] = now - timedelta(days=num)
+        elif unit == 'week':
+            result['posted_at'] = now - timedelta(weeks=num)
+        elif unit == 'month':
+            result['posted_at'] = now - timedelta(days=num * 30)
+
+    # Check for remote status in Overview section
+    overview_section = False
+    for line in lines:
+        line_stripped = line.strip()
+
+        if line_stripped == 'Overview':
+            overview_section = True
+            continue
+
+        if overview_section:
+            lower = line_stripped.lower()
+            if 'remote' in lower:
+                result['is_remote'] = True
+            elif 'on site' in lower or 'on-site' in lower or 'onsite' in lower:
+                if result['is_remote'] is None:
+                    result['is_remote'] = False
+
+            # Stop at Skills or Job Details
+            if line_stripped in ['Skills', 'Job Details']:
+                break
+
+    # Parse salary from Additional Information section
+    # Pattern: "$150,000 to $270,000 per year"
+    salary_match = re.search(
+        r'\$\s*([\d,]+)\s*(?:to|-)\s*\$\s*([\d,]+)\s*(?:per\s+year|annually)?',
+        text, re.IGNORECASE
+    )
+    if salary_match:
+        result['salary_text'] = salary_match.group(0).strip()
+        try:
+            result['salary_min'] = int(salary_match.group(1).replace(',', ''))
+            result['salary_max'] = int(salary_match.group(2).replace(',', ''))
+        except (ValueError, TypeError):
+            pass
+
+    # Extract cleaned description - from "Job Details" to before "Additional Information" or footer
+    job_details_start = None
+    job_details_end = None
+
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        if line_stripped == 'Job Details':
+            job_details_start = i + 1
+        elif job_details_start and line_stripped in ['Additional Information', 'Other Benefit Programs',
+                                                       'Report this job', 'Dice Id:']:
+            job_details_end = i
+            break
+
+    if job_details_start is not None:
+        if job_details_end is not None:
+            desc_lines = lines[job_details_start:job_details_end]
+        else:
+            desc_lines = lines[job_details_start:]
+
+        # Clean up the description - remove common footer patterns
+        cleaned_lines = []
+        for line in desc_lines:
+            stripped = line.strip()
+            # Stop at footer patterns
+            if any(pat in stripped for pat in ['Dice Id:', 'Position Id:', 'Report this job',
+                                                 'Read Full Job Description', 'Go to company profile']):
+                break
+            cleaned_lines.append(line)
+
+        result['cleaned_description'] = '\n'.join(cleaned_lines).strip()
+
+    log.debug(f"Parsed Dice job: title={result['title']}, company={result['company']}, "
+              f"location={result['location']}, salary={result['salary_text']}")
+
+    return result
+
+
+def is_monster_format(text: str) -> bool:
+    """Detect if text is copied from Monster job posting."""
+    indicators = [
+        'Quick Apply',
+        'Profile Insights',
+        'Am I Qualified?',
+        'Numbers & Facts',
+        'Add your missing skills',
+        'Add Skills',
+        'matched\n',
+        'unmatched\n',
+    ]
+    count = sum(1 for ind in indicators if ind in text)
+    return count >= 2
+
+
+def parse_monster_header(text: str) -> Dict:
+    """
+    Parse Monster job posting format.
+
+    Monster format (typical):
+    Line 1: Job title
+    Line 2-3: Empty or "Quick Apply"
+    Line 4: Company name (sometimes missing - need to extract from description or footer)
+    Line 5: "Profile Insights" section with skills
+    ...
+    "Description" section with job details
+    ...
+    "Numbers & Facts" section with location, salary, etc.
+    "About Company" section with company info
+    """
+    result = {
+        'company': None,
+        'title': None,
+        'location': None,
+        'is_remote': None,
+        'cleaned_description': None,
+        'salary_text': None,
+        'salary_min': None,
+        'salary_max': None
+    }
+
+    lines = text.split('\n')
+
+    # First non-empty line is usually the job title
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if line and line.lower() not in ['quick apply', 'apply', '']:
+            # Check if it looks like a job title (contains job keywords)
+            title_keywords = ['engineer', 'developer', 'manager', 'architect', 'lead', 'director',
+                              'analyst', 'scientist', 'designer', 'specialist', 'consultant',
+                              'administrator', 'coordinator', 'senior', 'junior', 'staff', 'sr', 'jr']
+            if any(kw in line.lower() for kw in title_keywords):
+                result['title'] = line
+                break
+            # If first substantial line and not a common skip pattern
+            elif i < 5 and len(line) > 5 and len(line) < 100:
+                result['title'] = line
+                break
+
+    # Find company name - try multiple sources:
+    # 1. Header (between title and Profile Insights)
+    # 2. "About Company" section in Numbers & Facts
+    # 3. First line of description that mentions "is seeking" or similar
+    # 4. Website URL domain
+
+    # Method 1: Header company name
+    in_header = True
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+
+        if 'Profile Insights' in line or 'Am I Qualified' in line:
+            in_header = False
+            break
+
+        if in_header and line_stripped and result['title'] and line_stripped != result['title']:
+            # Skip common UI elements
+            skip_patterns = ['quick apply', 'apply', 'save', 'share', 'profile insights',
+                             'am i qualified', 'skills', 'matched', 'unmatched']
+            if not any(skip in line_stripped.lower() for skip in skip_patterns):
+                # Company name is usually short
+                if len(line_stripped) > 2 and len(line_stripped) < 60:
+                    # Check it doesn't look like a job title
+                    title_keywords = ['engineer', 'developer', 'manager', 'architect', 'senior', 'junior']
+                    if not any(kw in line_stripped.lower() for kw in title_keywords):
+                        result['company'] = line_stripped
+                        break
+
+    # Find "Numbers & Facts" section for location, salary, and company
+    numbers_section = False
+    about_company_section = False
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+
+        if 'Numbers & Facts' in line:
+            numbers_section = True
+            continue
+
+        if 'About Company' in line:
+            about_company_section = True
+            numbers_section = False
+            continue
+
+        if numbers_section:
+            # Location pattern - "Location\tSunnyvale, CA (Remote)"
+            if line_stripped.startswith('Location'):
+                loc_match = re.search(r'Location\s+(.+)', line_stripped)
+                if loc_match:
+                    result['location'] = loc_match.group(1).strip()
+
+            # Salary pattern - "$70–$75 Per Hour" or "$150,000 - $200,000"
+            if line_stripped.startswith('Salary'):
+                salary_match = re.search(r'\$\s*([\d,]+)(?:\s*[-–]\s*\$?\s*([\d,]+))?\s*(?:Per\s+)?(Hour|Year|Annually)?', line_stripped, re.IGNORECASE)
+                if salary_match:
+                    result['salary_text'] = salary_match.group(0).strip()
+                    try:
+                        num1 = int(salary_match.group(1).replace(',', ''))
+                        # Convert hourly to annual (assuming 2080 hours/year)
+                        if salary_match.group(3) and 'hour' in salary_match.group(3).lower():
+                            num1 = num1 * 2080
+                        result['salary_min'] = num1
+
+                        if salary_match.group(2):
+                            num2 = int(salary_match.group(2).replace(',', ''))
+                            if salary_match.group(3) and 'hour' in salary_match.group(3).lower():
+                                num2 = num2 * 2080
+                            result['salary_max'] = num2
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract company from Website URL if not found yet
+            if not result['company'] and line_stripped.startswith('Website'):
+                url_match = re.search(r'https?://(?:www\.)?([^/]+)', line_stripped)
+                if url_match:
+                    domain = url_match.group(1)
+                    # Extract company name from domain (e.g., prolim.com -> PROLIM)
+                    company_from_domain = domain.split('.')[0]
+                    if company_from_domain and len(company_from_domain) > 2:
+                        result['company'] = company_from_domain.upper()
+
+        # Look for company name in About Company section (first substantial line)
+        if about_company_section and not result['company']:
+            # First line of About Company that starts with company name
+            # Pattern: "PROLIM is a leading provider..." or "Company Name is..."
+            company_match = re.match(r'^([A-Z][A-Za-z0-9\s&.,]+?)\s+(?:is\s+a|is\s+an|is\s+the|provides?|offers?|specializes?)', line_stripped)
+            if company_match:
+                result['company'] = company_match.group(1).strip()
+
+    # Method 3: Extract company from description if still not found
+    if not result['company']:
+        # Look for patterns like "CompanyName (www.company.com) is seeking"
+        # or "CompanyName is currently seeking"
+        desc_company_patterns = [
+            r'^([A-Z][A-Za-z0-9\s&.,]+?)\s*\([^)]*\.com[^)]*\)\s*is\s+(?:currently\s+)?seeking',
+            r'^([A-Z][A-Za-z0-9\s&.,]+?)\s+is\s+(?:currently\s+)?(?:seeking|looking|hiring)',
+            r'^About\s+([A-Z][A-Za-z0-9\s&.,]+?)$',
+        ]
+        for line in lines:
+            line_stripped = line.strip()
+            for pattern in desc_company_patterns:
+                match = re.match(pattern, line_stripped, re.IGNORECASE)
+                if match:
+                    company = match.group(1).strip()
+                    # Validate it's not too long and doesn't contain skip words
+                    if len(company) > 2 and len(company) < 50:
+                        result['company'] = company
+                        break
+            if result['company']:
+                break
+
+    # Check for remote in location
+    if result['location']:
+        loc_lower = result['location'].lower()
+        if 'remote' in loc_lower:
+            result['is_remote'] = True
+        elif 'on-site' in loc_lower or 'onsite' in loc_lower:
+            result['is_remote'] = False
+
+    # Extract cleaned description - everything between "Description" and "Numbers & Facts"
+    desc_start = None
+    desc_end = None
+
+    for i, line in enumerate(lines):
+        if line.strip() == 'Description':
+            desc_start = i + 1
+        elif 'Numbers & Facts' in line:
+            desc_end = i
+            break
+
+    if desc_start is not None:
+        if desc_end is not None:
+            result['cleaned_description'] = '\n'.join(lines[desc_start:desc_end]).strip()
+        else:
+            result['cleaned_description'] = '\n'.join(lines[desc_start:]).strip()
+
+    # If no explicit Description section, try to extract from after skills section
+    if not result['cleaned_description']:
+        skills_end = None
+        for i, line in enumerate(lines):
+            if 'Add Skills' in line or '+ show more' in line:
+                skills_end = i + 1
+                break
+        if skills_end:
+            for i, line in enumerate(lines[skills_end:], start=skills_end):
+                if 'Numbers & Facts' in line:
+                    result['cleaned_description'] = '\n'.join(lines[skills_end:i]).strip()
+                    break
+
+    log.debug(f"Parsed Monster job: title={result['title']}, company={result['company']}, "
+              f"location={result['location']}, salary={result['salary_text']}")
 
     return result
 

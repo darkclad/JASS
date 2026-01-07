@@ -2,6 +2,32 @@
 
 {% block title %}Saved Jobs - JASS{% endblock %}
 
+{% block extra_css %}
+<style>
+    .sortable {
+        cursor: pointer;
+        user-select: none;
+    }
+    .sortable:hover {
+        background-color: #f8f9fa;
+    }
+    .sortable::after {
+        content: '\F282';
+        font-family: 'bootstrap-icons';
+        margin-left: 0.5rem;
+        opacity: 0.3;
+    }
+    .sortable.asc::after {
+        content: '\F148';
+        opacity: 1;
+    }
+    .sortable.desc::after {
+        content: '\F128';
+        opacity: 1;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1><i class="bi bi-collection"></i> Saved Jobs</h1>
@@ -31,26 +57,34 @@
     </li>
 </ul>
 
+<!-- Job Description Preview Tooltip -->
+<div id="jobPreviewTooltip" class="job-preview-tooltip"></div>
+
 {% if jobs %}
 <div class="card">
     <div class="table-responsive">
         <table class="table table-hover mb-0">
             <thead>
                 <tr>
-                    <th>Title</th>
-                    <th>Company</th>
-                    <th>Location</th>
+                    <th class="sortable" data-sort="title">Title</th>
+                    <th class="sortable" data-sort="company">Company</th>
+                    <th class="sortable" data-sort="location">Location</th>
                     <th>Info</th>
-                    <th>Status</th>
-                    <th>Saved</th>
+                    <th class="sortable" data-sort="status">Status</th>
+                    <th class="sortable desc" data-sort="date">Saved</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for job in jobs %}
-                <tr>
+                <tr data-job-id="{{ job.id }}"
+                    data-title="{{ job.title|lower }}"
+                    data-company="{{ job.company|lower }}"
+                    data-location="{{ (job.location or '')|lower }}"
+                    data-status="{{ job.status }}"
+                    data-date="{{ job.created_at.strftime('%Y%m%d%H%M') if job.created_at else '0' }}">
                     <td>
-                        <a href="{{ url_for('job_detail', id=job.id) }}" class="text-decoration-none fw-bold">
+                        <a href="{{ url_for('job_detail', id=job.id) }}" class="text-decoration-none fw-bold job-title-hover">
                             {{ job.title }}
                         </a>
                         {% if job.source and job.source != 'greenhouse' %}
@@ -102,4 +136,134 @@
     <p>Use the buttons above to add jobs manually or search Greenhouse</p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Sortable columns
+document.querySelectorAll('.sortable').forEach(header => {
+    header.addEventListener('click', function() {
+        const table = this.closest('table');
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const sortKey = this.dataset.sort;
+
+        // Determine sort direction
+        const isAsc = this.classList.contains('asc');
+        const isDesc = this.classList.contains('desc');
+        let direction = 'asc';
+
+        if (!isAsc && !isDesc) {
+            direction = 'asc';
+        } else if (isAsc) {
+            direction = 'desc';
+        } else {
+            direction = 'asc';
+        }
+
+        // Remove sort classes from all headers
+        table.querySelectorAll('.sortable').forEach(h => {
+            h.classList.remove('asc', 'desc');
+        });
+
+        // Add sort class to current header
+        this.classList.add(direction);
+
+        // Sort rows
+        rows.sort((a, b) => {
+            let aVal = a.dataset[sortKey] || '';
+            let bVal = b.dataset[sortKey] || '';
+
+            // For date, compare numerically
+            if (sortKey === 'date') {
+                aVal = parseInt(aVal) || 0;
+                bVal = parseInt(bVal) || 0;
+                return direction === 'asc' ? aVal - bVal : bVal - aVal;
+            }
+
+            // For text, compare alphabetically
+            if (direction === 'asc') {
+                return aVal.localeCompare(bVal);
+            } else {
+                return bVal.localeCompare(aVal);
+            }
+        });
+
+        // Re-append sorted rows
+        rows.forEach(row => tbody.appendChild(row));
+    });
+});
+
+// Job description hover preview
+const tooltip = document.getElementById('jobPreviewTooltip');
+let hoverTimeout;
+let isOverTooltip = false;
+const descriptionCache = {};
+
+document.querySelectorAll('.job-title-hover').forEach(title => {
+    title.addEventListener('mouseenter', async function(e) {
+        const row = this.closest('tr');
+        const jobId = row?.dataset.jobId;
+        if (!jobId) return;
+
+        hoverTimeout = setTimeout(async () => {
+            // Check cache first
+            if (!descriptionCache[jobId]) {
+                try {
+                    const response = await fetch(`/jobs/${jobId}/description`);
+                    const data = await response.json();
+                    descriptionCache[jobId] = data.description || '<em>No description available</em>';
+                } catch (err) {
+                    descriptionCache[jobId] = '<em>Failed to load description</em>';
+                }
+            }
+
+            tooltip.innerHTML = descriptionCache[jobId];
+            tooltip.scrollTop = 0;  // Reset scroll position for new content
+            tooltip.classList.add('visible');
+
+            // Position tooltip near the title
+            const rect = this.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+
+            let top = rect.bottom + scrollTop + 5;
+            let left = rect.left + scrollLeft;
+
+            // Keep tooltip within viewport
+            if (left + 400 > window.innerWidth) {
+                left = window.innerWidth - 420 + scrollLeft;
+            }
+            if (top + 300 > window.innerHeight + scrollTop) {
+                top = rect.top + scrollTop - 310;
+            }
+
+            tooltip.style.top = top + 'px';
+            tooltip.style.left = left + 'px';
+        }, 300);
+    });
+
+    title.addEventListener('mouseleave', function() {
+        clearTimeout(hoverTimeout);
+        // Delay hiding to allow moving to tooltip
+        setTimeout(() => {
+            if (!isOverTooltip) {
+                tooltip.classList.remove('visible');
+                tooltip.scrollTop = 0;
+            }
+        }, 100);
+    });
+});
+
+// Keep tooltip visible when hovering over it
+tooltip?.addEventListener('mouseenter', function() {
+    isOverTooltip = true;
+});
+
+tooltip?.addEventListener('mouseleave', function() {
+    isOverTooltip = false;
+    tooltip.classList.remove('visible');
+    tooltip.scrollTop = 0;
+});
+</script>
 {% endblock %}
