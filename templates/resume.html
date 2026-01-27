@@ -38,6 +38,9 @@
             <i class="bi bi-eye"></i> Preview
         </button>
         {% if current %}
+        <a href="{{ url_for('download_resume_pdf', id=current.id) }}" class="btn btn-outline-danger me-2">
+            <i class="bi bi-file-earmark-pdf"></i> Save as PDF
+        </a>
         <button type="button" class="btn btn-primary" onclick="newResume()">
             <i class="bi bi-plus"></i> New
         </button>

@@ -53,6 +53,9 @@
             <span class="btn-text"><i class="bi bi-check-lg"></i> Save</span>
             <span class="spinner-border" role="status"></span>
         </button>
+        <button type="button" class="btn btn-danger me-2" id="resetBtn" title="Clear all fields">
+            <i class="bi bi-arrow-counterclockwise"></i> Reset
+        </button>
         <a href="{{ url_for('jobs') }}" class="btn btn-outline-secondary">Cancel</a>
     </div>
 </div>
@@ -399,6 +402,24 @@ async function parseDescription() {
 
 document.getElementById('addJobForm')?.addEventListener('submit', function() {
     setLoading(document.getElementById('submitBtnTop'), true);
+});
+
+// Reset button - clear all form fields
+document.getElementById('resetBtn')?.addEventListener('click', function() {
+    // Clear all form inputs
+    document.getElementById('titleInput').value = '';
+    document.getElementById('companyInput').value = '';
+    document.getElementById('locationInput').value = '';
+    document.getElementById('sourceSelect').value = 'manual';
+    document.querySelector('input[name="url"]').value = '';
+    document.getElementById('jobDescription').value = '';
+
+    // Hide parsed info and hints
+    document.getElementById('parsedInfo').classList.remove('show');
+    document.getElementById('titleHint').style.display = 'none';
+    document.getElementById('companyHint').style.display = 'none';
+    document.getElementById('locationHint').style.display = 'none';
+    document.getElementById('duplicateWarning').classList.remove('show');
 });
 </script>
 {% endblock %}

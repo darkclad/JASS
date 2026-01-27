@@ -155,7 +155,11 @@
          data-location="{{ job.location|lower }}"
          data-saved="{{ 'saved' if job.is_saved else 'new' }}"
          data-days="{{ job.freshness.days if job.freshness.days is not none else 999 }}"
-         data-description="{{ job.description|e }}">
+         data-description="{{ job.description|e }}"
+         data-greenhouse-id="{{ job.greenhouse_id }}"
+         data-board-token="{{ job.board_token }}"
+         data-url="{{ job.url }}"
+         data-department="{{ job.department|default('') }}">
         <div class="card-body py-3">
             <div class="row align-items-center">
                 <div class="col">
@@ -233,40 +237,44 @@
 
 {% block extra_js %}
 <script>
-// Save job button handler
-document.querySelectorAll('.save-job-btn').forEach(btn => {
-    btn.addEventListener('click', async function() {
-        const jobData = JSON.parse(this.dataset.job);
-        this.disabled = true;
-        this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+// Reusable save job handler function
+async function saveJobHandler(e) {
+    const btn = e?.target?.closest ? e.target.closest('.save-job-btn') || this : this;
+    const jobData = JSON.parse(btn.dataset.job);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
 
-        try {
-            const response = await fetch('/search/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(jobData)
-            });
-            const data = await response.json();
+    try {
+        const response = await fetch('/search/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(jobData)
+        });
+        const data = await response.json();
 
-            if (data.success) {
-                // Replace button with a link to the saved job
-                const link = document.createElement('a');
-                link.href = `/jobs/${data.job_id}`;
-                link.className = 'btn btn-sm btn-success';
-                link.innerHTML = '<i class="bi bi-check"></i> Saved';
-                this.parentNode.replaceChild(link, this);
+        if (data.success) {
+            // Replace button with a link to the saved job
+            const link = document.createElement('a');
+            link.href = `/jobs/${data.job_id}`;
+            link.className = 'btn btn-sm btn-success';
+            link.innerHTML = '<i class="bi bi-check"></i> Saved';
+            btn.parentNode.replaceChild(link, btn);
 
-                // Update card state
-                const card = link.closest('.job-card');
-                card.classList.add('saved');
-                card.dataset.saved = 'saved';
-            }
-        } catch (err) {
-            this.disabled = false;
-            this.innerHTML = '<i class="bi bi-bookmark"></i> Save';
-            alert('Error saving job: ' + err.message);
+            // Update card state
+            const card = link.closest('.job-card');
+            card.classList.add('saved');
+            card.dataset.saved = 'saved';
         }
-    });
+    } catch (err) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+        alert('Error saving job: ' + err.message);
+    }
+}
+
+// Attach save handler to all save buttons
+document.querySelectorAll('.save-job-btn').forEach(btn => {
+    btn.addEventListener('click', saveJobHandler);
 });
 
 // Country aliases for location filtering
@@ -726,16 +734,122 @@ document.querySelectorAll('.search-history-link').forEach(link => {
     });
 });
 
-// Click on job card row to save (if not already saved)
+// Double-click on job card to save and navigate to application
 document.querySelectorAll('.job-card').forEach(card => {
-    card.addEventListener('click', function(e) {
+    card.addEventListener('dblclick', async function(e) {
         // Don't trigger if clicking on buttons or links
         if (e.target.closest('button') || e.target.closest('a')) return;
 
-        // Find the save button if job not already saved
-        const saveBtn = this.querySelector('.save-job-btn');
-        if (saveBtn && !saveBtn.disabled) {
-            saveBtn.click();
+        const isSaved = this.classList.contains('saved');
+
+        if (isSaved) {
+            // Already saved - navigate to the saved job
+            const savedLink = this.querySelector('a.btn-success');
+            if (savedLink) {
+                window.location.href = savedLink.href;
+            }
+        } else {
+            // Save the job first, then navigate
+            const saveBtn = this.querySelector('.save-job-btn');
+            if (saveBtn && !saveBtn.disabled) {
+                const jobData = JSON.parse(saveBtn.dataset.job);
+                saveBtn.disabled = true;
+                saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+                try {
+                    const response = await fetch('/search/save', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(jobData)
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Navigate to the job detail page
+                        window.location.href = `/jobs/${data.job_id}`;
+                    } else {
+                        saveBtn.disabled = false;
+                        saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+                        alert('Error saving job');
+                    }
+                } catch (err) {
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+                    alert('Error saving job: ' + err.message);
+                }
+            }
+        }
+    });
+});
+
+// Click on job card row to save (if not already saved)
+// Ctrl+click toggles saved state (saves or unsaves)
+document.querySelectorAll('.job-card').forEach(card => {
+    card.addEventListener('click', async function(e) {
+        // Don't trigger if clicking on buttons or links
+        if (e.target.closest('button') || e.target.closest('a')) return;
+
+        const isSaved = this.classList.contains('saved');
+
+        // Ctrl+click: toggle saved state
+        if (e.ctrlKey || e.metaKey) {
+            if (isSaved) {
+                // Unsave the job
+                const greenhouseId = this.dataset.greenhouseId;
+                if (!greenhouseId) return;
+
+                try {
+                    const response = await fetch('/search/unsave', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({greenhouse_id: greenhouseId})
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Update card state to unsaved
+                        this.classList.remove('saved');
+                        this.dataset.saved = 'new';
+
+                        // Replace the "Saved" link with a "Save" button
+                        const savedLink = this.querySelector('a.btn-success');
+                        if (savedLink) {
+                            const jobData = {
+                                greenhouse_id: greenhouseId,
+                                board_token: this.dataset.boardToken,
+                                title: this.querySelector('.job-title-hover')?.textContent || '',
+                                company: this.dataset.company,
+                                location: this.dataset.location,
+                                url: this.dataset.url,
+                                description: this.dataset.description,
+                                department: this.dataset.department || ''
+                            };
+                            const saveBtn = document.createElement('button');
+                            saveBtn.className = 'btn btn-sm btn-outline-primary save-job-btn';
+                            saveBtn.dataset.job = JSON.stringify(jobData);
+                            saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+                            saveBtn.addEventListener('click', saveJobHandler);
+                            savedLink.parentNode.replaceChild(saveBtn, savedLink);
+                        }
+                    } else {
+                        alert('Error: ' + (data.error || 'Failed to unsave job'));
+                    }
+                } catch (err) {
+                    alert('Error unsaving job: ' + err.message);
+                }
+            } else {
+                // Save the job (same as regular click)
+                const saveBtn = this.querySelector('.save-job-btn');
+                if (saveBtn && !saveBtn.disabled) {
+                    saveBtn.click();
+                }
+            }
+        } else {
+            // Regular click: only save if not already saved
+            const saveBtn = this.querySelector('.save-job-btn');
+            if (saveBtn && !saveBtn.disabled) {
+                saveBtn.click();
+            }
         }
     });
 });
