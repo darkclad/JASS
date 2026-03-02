@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import threading
+import queue
 from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 import markdown
@@ -210,6 +212,135 @@ def search_jobs():
                            cache_age=cache_age)
 
 
+@app.route('/search/stream')
+def search_jobs_stream():
+    """SSE endpoint: stream search results as each board completes."""
+    from greenhouse import GreenhouseClient
+    from config import Config
+
+    keywords = request.args.get('keywords', '').strip()
+    location = request.args.get('location', '').strip() or None
+    boards_param = request.args.get('boards', '').strip()
+    force_refresh = request.args.get('refresh') == '1'
+
+    if not keywords:
+        def error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No keywords provided'})}\n\n"
+        return Response(error_stream(), mimetype='text/event-stream')
+
+    # Parse boards
+    board_list = None
+    if boards_param:
+        board_list = [b.strip() for b in boards_param.split(',') if b.strip()]
+
+    if not board_list:
+        custom_boards = AppSettings.get('greenhouse_boards')
+        board_list = custom_boards if custom_boards else Config.DEFAULT_BOARDS
+
+    # Filter out commented boards
+    board_list = [b for b in board_list if not b.startswith('#')]
+
+    keyword_list = [kw.strip() for kw in keywords.split() if kw.strip()]
+
+    # Check cache first
+    cache_key = SearchCache.get_cache_key(keywords, location, board_list)
+    cached = SearchCache.query.filter_by(cache_key=cache_key).first()
+
+    if cached and cached.is_valid() and not force_refresh:
+        # Serve cached results in one shot
+        def cached_stream():
+            results = json.loads(cached.results)
+            # Check saved status
+            for job in results:
+                existing = Job.query.filter_by(greenhouse_id=job['greenhouse_id']).first()
+                job['is_saved'] = existing is not None
+                job['saved_id'] = existing.id if existing else None
+            yield f"data: {json.dumps({'type': 'cached', 'jobs': results, 'total': len(results), 'cache_age': cached.created_at.isoformat()})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'total': len(results), 'from_cache': True})}\n\n"
+        return Response(cached_stream(), mimetype='text/event-stream')
+
+    def stream():
+        # Must push app context since generators execute lazily outside request
+        with app.app_context():
+            client = GreenhouseClient()
+            all_results = []
+            total_boards = len(board_list)
+            completed_boards = 0
+            failed_boards = []
+
+            yield f"data: {json.dumps({'type': 'start', 'total_boards': total_boards, 'boards': board_list})}\n\n"
+
+            for board_token, matching_jobs, error in client.search_jobs_streaming(keyword_list, board_list, location):
+                completed_boards += 1
+
+                if error:
+                    failed_boards.append({'board': board_token, 'error': error})
+                    yield f"data: {json.dumps({'type': 'board_error', 'board': board_token, 'error': error, 'completed': completed_boards, 'total_boards': total_boards})}\n\n"
+                    continue
+
+                # Check saved status for each job
+                for job in matching_jobs:
+                    existing = Job.query.filter_by(greenhouse_id=job['greenhouse_id']).first()
+                    job['is_saved'] = existing is not None
+                    job['saved_id'] = existing.id if existing else None
+
+                all_results.extend(matching_jobs)
+
+                yield f"data: {json.dumps({'type': 'board_done', 'board': board_token, 'jobs': matching_jobs, 'count': len(matching_jobs), 'completed': completed_boards, 'total_boards': total_boards})}\n\n"
+
+            # Sort all results for caching
+            all_results.sort(key=lambda j: j.get('posted_at') or '', reverse=True)
+
+            # Save to cache
+            try:
+                cache_results = [{k: v for k, v in job.items() if k not in ('is_saved', 'saved_id')} for job in all_results]
+                existing_cache = SearchCache.query.filter_by(cache_key=cache_key).first()
+                if existing_cache:
+                    existing_cache.results = json.dumps(cache_results)
+                    existing_cache.result_count = len(cache_results)
+                    existing_cache.created_at = datetime.utcnow()
+                else:
+                    new_cache = SearchCache(
+                        cache_key=cache_key,
+                        keywords=keywords,
+                        location=location,
+                        boards=json.dumps(board_list) if board_list else None,
+                        results=json.dumps(cache_results),
+                        result_count=len(cache_results)
+                    )
+                    db.session.add(new_cache)
+                db.session.commit()
+            except Exception as e:
+                log.error(f"Error saving search cache: {e}")
+
+            # Save search history
+            try:
+                existing_history = SearchHistory.query.filter_by(keywords=keywords, location=location).first()
+                if existing_history:
+                    existing_history.result_count = len(all_results)
+                    existing_history.created_at = datetime.utcnow()
+                else:
+                    history = SearchHistory(
+                        keywords=keywords,
+                        location=location,
+                        boards=json.dumps(board_list) if board_list else None,
+                        result_count=len(all_results)
+                    )
+                    db.session.add(history)
+                db.session.commit()
+
+                old_searches = SearchHistory.query.order_by(SearchHistory.created_at.desc()).offset(10).all()
+                for old in old_searches:
+                    db.session.delete(old)
+                db.session.commit()
+            except Exception as e:
+                log.error(f"Error saving search history: {e}")
+
+            yield f"data: {json.dumps({'type': 'done', 'total': len(all_results), 'from_cache': False, 'failed_boards': failed_boards})}\n\n"
+
+    return Response(stream(), mimetype='text/event-stream')
+
+
 @app.route('/search/save', methods=['POST'])
 def save_job_from_search():
     """Save a job from search results."""
@@ -237,6 +368,29 @@ def save_job_from_search():
     db.session.commit()
 
     return jsonify({'success': True, 'job_id': job.id})
+
+
+@app.route('/search/unsave', methods=['POST'])
+def unsave_job_from_search():
+    """Remove a saved job from search results (Ctrl+click toggle)."""
+    data = request.get_json()
+    greenhouse_id = data.get('greenhouse_id')
+
+    if not greenhouse_id:
+        return jsonify({'success': False, 'error': 'Missing greenhouse_id'}), 400
+
+    job = Job.query.filter_by(greenhouse_id=greenhouse_id).first()
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+
+    # Check if job has an application - don't allow unsaving if it does
+    if job.application:
+        return jsonify({'success': False, 'error': 'Cannot unsave job with existing application'}), 400
+
+    db.session.delete(job)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Job removed from saved'})
 
 
 @app.route('/search/clear-history', methods=['POST'])
@@ -312,107 +466,118 @@ def parse_job():
     })
 
 
+def _fuzzy_word_similarity(a: str, b: str) -> float:
+    """Calculate word-level Jaccard similarity between two strings (0.0 to 1.0)."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    intersection = len(words_a & words_b)
+    union = len(words_a | words_b)
+    return intersection / union if union else 0.0
+
+
+def _company_match(company: str, job_company: str) -> float:
+    """Fuzzy company name matching (0.0 to 1.0). Handles Inc/LLC/Corp variations."""
+    if not company or not job_company:
+        return 0.0
+    # Strip common suffixes for comparison
+    import re
+    suffixes = r'\b(inc|llc|ltd|corp|co|company|gmbh|plc|sa|ag|group|holdings?|technologies|tech|software|solutions|services|consulting|international|global)\.?\b'
+    clean_a = re.sub(suffixes, '', company, flags=re.IGNORECASE).strip()
+    clean_b = re.sub(suffixes, '', job_company, flags=re.IGNORECASE).strip()
+    # Exact match after cleaning
+    if clean_a == clean_b:
+        return 1.0
+    # Substring match
+    if clean_a in clean_b or clean_b in clean_a:
+        return 0.9
+    # Word overlap
+    return _fuzzy_word_similarity(clean_a, clean_b)
+
+
+def _content_similarity(desc_a: str, desc_b: str) -> float:
+    """Calculate content similarity between two descriptions using word overlap (0.0 to 1.0)."""
+    if not desc_a or not desc_b:
+        return 0.0
+    # Use word sets (strip common stop words for better signal)
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                  'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                  'should', 'may', 'might', 'shall', 'can', 'this', 'that', 'these',
+                  'those', 'it', 'its', 'you', 'your', 'we', 'our', 'they', 'their',
+                  'as', 'from', 'not', 'if', 'all', 'each', 'which', 'who', 'whom',
+                  'what', 'when', 'where', 'how', 'about', 'into', 'through', 'during',
+                  'before', 'after', 'above', 'below', 'between', 'such', 'no', 'nor',
+                  'than', 'too', 'very', 'just', 'also', 'more', 'other', 'some', 'any'}
+    words_a = set(desc_a.lower().split()) - stop_words
+    words_b = set(desc_b.lower().split()) - stop_words
+    if not words_a or not words_b:
+        return 0.0
+    intersection = len(words_a & words_b)
+    union = len(words_a | words_b)
+    return intersection / union if union else 0.0
+
+
 @app.route('/jobs/check-duplicates', methods=['POST'])
 def check_duplicate_jobs():
     """
-    Check for existing jobs with similar title, company, or description.
+    Check for existing jobs with similar company, title, or description.
 
-    Duplicate detection algorithm:
-    1. Exact/substring match on company + title (score: 100 exact, 80 partial)
-    2. Word overlap on title (>50% overlap) with company match (score: 80)
-    3. Description phrase matching (5-word sequences) for same company (score: 70)
-    4. Description word overlap (>60%) for same company (score: 60)
+    Uses fuzzy matching for company names (handles Inc/LLC variations),
+    word overlap for titles, and Jaccard similarity for descriptions.
 
-    Returns list of potential duplicates sorted by match score (highest first).
+    Returns list of potential duplicates with match percentages.
     """
     from bs4 import BeautifulSoup
 
     data = request.get_json()
-    title = data.get('title', '').strip().lower()
-    company = data.get('company', '').strip().lower()
-    description = data.get('description', '').strip().lower()
+    title = data.get('title', '').strip()
+    company = data.get('company', '').strip()
+    description = data.get('description', '').strip()
 
     if not title and not company and not description:
         return jsonify({'duplicates': []})
 
-    duplicates = []
-    seen_ids = set()
+    # Strip HTML from input description if present
+    if description and '<' in description:
+        description = BeautifulSoup(description, 'html.parser').get_text()
 
+    duplicates = []
     all_jobs = Job.query.all()
 
     for job in all_jobs:
-        if job.id in seen_ids:
-            continue
-
-        job_title = (job.title or '').lower()
-        job_company = (job.company or '').lower()
-
-        # Get plain text from job description (strip HTML)
+        job_title = job.title or ''
+        job_company = job.company or ''
         job_desc_html = job.description or ''
-        job_desc = BeautifulSoup(job_desc_html, 'html.parser').get_text().lower()
+        job_desc = BeautifulSoup(job_desc_html, 'html.parser').get_text()
 
-        match_reason = None
-        match_score = 0
+        # Calculate individual similarity scores
+        company_sim = _company_match(company, job_company) if company else 0.0
+        title_sim = _fuzzy_word_similarity(title, job_title) if title else 0.0
+        content_sim = _content_similarity(description, job_desc) if description and job_desc else 0.0
 
-        # Check title + company match
-        if title and company:
-            title_match = title in job_title or job_title in title
-            company_match = company in job_company or job_company in company
+        # Determine overall match score (weighted)
+        # Company match is a strong signal, title and content add to it
+        if company_sim >= 0.5:
+            # Same company - check title and content
+            match_score = int(company_sim * 40 + title_sim * 30 + content_sim * 30)
+        elif content_sim >= 0.4:
+            # High content similarity even without company match
+            match_score = int(title_sim * 30 + content_sim * 70)
+        else:
+            match_score = 0
 
-            # Word-based similarity for title
-            title_words = set(title.split())
-            job_title_words = set(job_title.split())
-            title_overlap = len(title_words & job_title_words) / max(len(title_words), 1) if title_words else 0
+        # Build match reason with percentages
+        if match_score >= 40:
+            reasons = []
+            if company_sim >= 0.5:
+                reasons.append(f"Company {int(company_sim * 100)}%")
+            if title_sim >= 0.3:
+                reasons.append(f"Title {int(title_sim * 100)}%")
+            if content_sim >= 0.2:
+                reasons.append(f"Content {int(content_sim * 100)}%")
 
-            if company_match and (title_match or title_overlap >= 0.5):
-                match_reason = 'Same company and similar title'
-                match_score = 100 if (title_match and company_match) else 80
-
-        # Check description similarity - only if company matches
-        # (different companies often have similar job descriptions for same roles)
-        if description and len(description) > 100 and not match_reason:
-            # First check if company matches
-            company_match = False
-            if company:
-                company_match = company in job_company or job_company in company
-                # Also check word overlap for company names (handles "Inc", "LLC" variations)
-                company_words = set(company.split())
-                job_company_words = set(job_company.split())
-                if company_words and job_company_words:
-                    company_overlap = len(company_words & job_company_words) / max(len(company_words), 1)
-                    if company_overlap >= 0.5:
-                        company_match = True
-
-            # Only check description similarity if company matches
-            if company_match:
-                # Extract significant phrases from description (first 500 chars)
-                desc_sample = description[:500]
-
-                # Look for unique phrases (5+ word sequences)
-                desc_words = desc_sample.split()
-                for i in range(len(desc_words) - 4):
-                    phrase = ' '.join(desc_words[i:i+5])
-                    if len(phrase) > 25 and phrase in job_desc:
-                        match_reason = 'Same company with similar description'
-                        match_score = 70
-                        break
-
-                # Also check for high word overlap in first part of description
-                if not match_reason:
-                    desc_word_set = set(desc_sample.split())
-                    job_desc_sample = job_desc[:500]
-                    job_desc_word_set = set(job_desc_sample.split())
-
-                    if desc_word_set and job_desc_word_set:
-                        overlap = len(desc_word_set & job_desc_word_set)
-                        overlap_ratio = overlap / min(len(desc_word_set), len(job_desc_word_set))
-
-                        if overlap_ratio > 0.6:
-                            match_reason = 'Same company with similar description'
-                            match_score = 60
-
-        if match_reason:
-            seen_ids.add(job.id)
             duplicates.append({
                 'id': job.id,
                 'title': job.title,
@@ -421,14 +586,14 @@ def check_duplicate_jobs():
                 'created_at': job.created_at.strftime('%Y-%m-%d') if job.created_at else None,
                 'has_application': job.application is not None,
                 'application_id': job.application.id if job.application else None,
-                'match_reason': match_reason,
+                'match_reason': ' | '.join(reasons),
                 'match_score': match_score
             })
 
     # Sort by match score (highest first)
     duplicates.sort(key=lambda x: x['match_score'], reverse=True)
 
-    return jsonify({'duplicates': duplicates})
+    return jsonify({'duplicates': duplicates[:10]})
 
 
 @app.route('/jobs/add', methods=['POST'])
@@ -747,15 +912,19 @@ def tailor_job_stream(id):
     - {"redirect": "/path"} - Final redirect after completion
     - {"error": "message"} - Error occurred, abort
 
-    Flow: Init AI -> Tailor resume -> Generate cover letter -> Convert to PDF -> Save
+    Flow:
+    1. Start TWO parallel threads immediately:
+       - Resume generation thread (AI markdown + PDF)
+       - Cover letter generation thread (AI markdown + PDF)
+    2. Stream progress events from both threads
+    3. Wait for both and combine results
     """
-    from ai_service import get_ai_provider
-    from document_gen import save_application_documents, extract_applicant_info, get_application_folder_name
+    from document_gen import extract_applicant_info, get_application_folder_name
 
     def generate():
         # SSE generators run outside request context, so we need app context
         with app.app_context():
-            job = Job.query.get(id)
+            job = db.session.get(Job, id)
             if not job:
                 yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
                 return
@@ -782,14 +951,7 @@ def tailor_job_stream(id):
                 return
 
             try:
-                yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
-
-                # Get custom prompts
-                resume_prompt = AppSettings.get('resume_prompt')
-                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
-
-                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
-                                     resume_prompt, cover_letter_prompt)
+                yield f"data: {json.dumps({'status': 'Starting parallel generation...'})}\n\n"
 
                 # Get plain text description
                 from bs4 import BeautifulSoup
@@ -799,29 +961,9 @@ def tailor_job_stream(id):
                 folder_name = get_application_folder_name(job.company, job.id)
                 app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
 
-                # Generate tailored resume
-                yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
-                if ai_config.provider == 'claude-cli':
-                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
-                else:
-                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
-
-                # Generate cover letter
-                yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
-                if ai_config.provider == 'claude-cli':
-                    cover_letter = ai.generate_cover_letter(
-                        tailored_resume, desc_text, job.company, job.title, app_dir,
-                        job.hiring_manager
-                    )
-                else:
-                    cover_letter = ai.generate_cover_letter(
-                        tailored_resume, desc_text, job.company, job.title,
-                        job.hiring_manager
-                    )
-
-                # Save documents
-                yield f"data: {json.dumps({'status': 'Generating PDFs...'})}\n\n"
+                # Extract applicant info
                 applicant_info = extract_applicant_info(master_resume.content)
+                applicant_info['company'] = job.company
                 jass_dir = os.path.dirname(os.path.abspath(__file__))
 
                 # Delete old application folder if exists
@@ -832,23 +974,104 @@ def tailor_job_stream(id):
                         import shutil
                         shutil.rmtree(old_dir)
 
-                paths = save_application_documents(
-                    job.id, tailored_resume, cover_letter, Config.APPLICATIONS_DIR,
-                    company=job.company,
-                    first_name=applicant_info.get('first_name'),
-                    last_name=applicant_info.get('last_name'),
-                    script_dir=jass_dir
+                # Create queues for thread communication
+                resume_result_queue = queue.Queue()
+                resume_event_queue = queue.Queue()
+                cl_result_queue = queue.Queue()
+                cl_event_queue = queue.Queue()
+
+                # Capture values needed by threads (avoid accessing ORM objects across threads)
+                master_resume_content = master_resume.content
+                job_company = job.company
+                job_title = job.title
+                job_hiring_manager = job.hiring_manager
+                job_id = job.id
+
+                # Start BOTH threads in parallel
+                resume_thread = threading.Thread(
+                    target=generate_resume_threaded,
+                    args=(job_id, master_resume_content, desc_text, ai_config,
+                          app_dir, applicant_info, jass_dir, resume_result_queue, resume_event_queue),
+                    daemon=True,
+                    name=f"Resume-{job_id}"
                 )
 
-                # Create or update application
+                cl_thread = threading.Thread(
+                    target=generate_cover_letter_threaded,
+                    args=(job_id, master_resume_content, desc_text, job_company, job_title,
+                          job_hiring_manager, ai_config, app_dir, applicant_info,
+                          jass_dir, cl_result_queue, cl_event_queue),
+                    daemon=True,
+                    name=f"CoverLetter-{job_id}"
+                )
+
+                resume_thread.start()
+                cl_thread.start()
+                log.info("Started parallel threads for resume and cover letter generation")
+
+                # Stream events from both threads
+                import time
+                both_finished = False
+                while not both_finished:
+                    # Drain events from both queues
+                    got_event = False
+                    for eq in (resume_event_queue, cl_event_queue):
+                        try:
+                            event = eq.get_nowait()
+                            yield f"data: {json.dumps(event)}\n\n"
+                            got_event = True
+                        except queue.Empty:
+                            pass
+
+                    if not got_event:
+                        if not resume_thread.is_alive() and not cl_thread.is_alive():
+                            # Drain any remaining events
+                            for eq in (resume_event_queue, cl_event_queue):
+                                while not eq.empty():
+                                    event = eq.get_nowait()
+                                    yield f"data: {json.dumps(event)}\n\n"
+                            both_finished = True
+                        else:
+                            time.sleep(0.3)
+
+                # Wait for both threads to complete
+                resume_thread.join(timeout=5)
+                cl_thread.join(timeout=5)
+
+                # Get results from both threads
+                try:
+                    resume_result = resume_result_queue.get(timeout=1)
+                except queue.Empty:
+                    raise Exception("Resume generation thread did not return a result")
+
+                try:
+                    cl_result = cl_result_queue.get(timeout=1)
+                except queue.Empty:
+                    raise Exception("Cover letter generation thread did not return a result")
+
+                # Check for errors
+                if not resume_result.get('success'):
+                    raise Exception(f"Resume generation failed: {resume_result.get('error', 'Unknown error')}")
+
+                if not cl_result.get('success'):
+                    raise Exception(f"Cover letter generation failed: {cl_result.get('error', 'Unknown error')}")
+
+                # Combine paths from both threads
+                resume_paths = resume_result['paths']
+                cl_paths = cl_result['paths']
+                all_paths = {**resume_paths, **cl_paths}
+
+                log.info("Both threads completed successfully, saving to database")
+
+                # Update database with results
                 if not application:
                     application = Application(job_id=job.id)
                     db.session.add(application)
 
-                application.resume_md = paths.get('resume_md')
-                application.resume_pdf = paths.get('resume_pdf')
-                application.cover_letter_md = paths.get('cover_letter_md')
-                application.cover_letter_pdf = paths.get('cover_letter_pdf')
+                application.resume_md = all_paths.get('resume_md')
+                application.resume_pdf = all_paths.get('resume_pdf')
+                application.cover_letter_md = all_paths.get('cover_letter_md')
+                application.cover_letter_pdf = all_paths.get('cover_letter_pdf')
                 application.ai_provider = ai_config.provider
                 application.ai_model = ai_config.model_name
                 application.tailored_at = datetime.utcnow()
@@ -862,7 +1085,6 @@ def tailor_job_stream(id):
                 db.session.commit()
 
                 log.info(f"Documents saved successfully for application {application.id}")
-                # Can't use url_for() outside request context, so build URL manually
                 redirect_url = f"/applications/{application.id}"
                 yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
 
@@ -873,11 +1095,158 @@ def tailor_job_stream(id):
     return Response(generate(), mimetype='text/event-stream')
 
 
+def generate_resume_threaded(job_id, master_resume_content, desc_text, ai_config,
+                             app_dir, applicant_info, jass_dir, result_queue, event_queue):
+    """
+    Generate resume in a separate thread.
+
+    Args:
+        job_id: Job ID
+        master_resume_content: Master resume markdown content
+        desc_text: Plain text job description
+        ai_config: AIConfig object with provider, api_key, model_name
+        app_dir: Application directory path
+        applicant_info: Dict with first_name, last_name, email, phone
+        jass_dir: JASS installation directory
+        result_queue: Queue to put results (dict with paths or error)
+        event_queue: Queue to put SSE events for progress updates
+    """
+    from ai_service import get_ai_provider
+    from document_gen import save_resume_document
+
+    try:
+        # Create app context for database access
+        with app.app_context():
+            event_queue.put({'status': 'Tailoring...', 'source': 'resume'})
+
+            # Get custom prompts
+            resume_prompt = AppSettings.get('resume_prompt')
+            cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+            # Initialize AI provider
+            ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                resume_prompt, cover_letter_prompt)
+
+            # Generate tailored resume
+            if ai_config.provider == 'claude-cli':
+                tailored_resume = ai.generate_tailored_resume(master_resume_content, desc_text, app_dir)
+            else:
+                tailored_resume = ai.generate_tailored_resume(master_resume_content, desc_text)
+
+            event_queue.put({'status': 'Generating PDF...', 'source': 'resume'})
+
+            # Save resume document (MD and PDF)
+            from document_gen import get_application_folder_name
+            from config import Config
+
+            paths = save_resume_document(
+                job_id, tailored_resume, Config.APPLICATIONS_DIR,
+                company=applicant_info.get('company'),
+                first_name=applicant_info.get('first_name'),
+                last_name=applicant_info.get('last_name'),
+                script_dir=jass_dir
+            )
+
+            # Put successful result in queue
+            result_queue.put({
+                'success': True,
+                'paths': paths,
+                'tailored_resume': tailored_resume
+            })
+
+            event_queue.put({'status': 'Done', 'source': 'resume'})
+            log.info(f"Resume generation completed for job {job_id}")
+
+    except Exception as e:
+        log.error(f"Error in resume thread for job {job_id}: {e}", exc_info=True)
+        result_queue.put({
+            'success': False,
+            'error': str(e)
+        })
+        event_queue.put({'error': f'Resume generation failed: {str(e)}'})
+
+
+def generate_cover_letter_threaded(job_id, resume_content, desc_text, company, title,
+                                   hiring_manager, ai_config, app_dir, applicant_info,
+                                   jass_dir, result_queue, event_queue):
+    """
+    Generate cover letter in a separate thread.
+
+    Args:
+        job_id: Job ID
+        resume_content: Resume markdown content (master or tailored)
+        desc_text: Plain text job description
+        company: Company name
+        title: Job title
+        hiring_manager: Hiring manager name (optional)
+        ai_config: AIConfig object with provider, api_key, model_name
+        app_dir: Application directory path
+        applicant_info: Dict with first_name, last_name
+        jass_dir: JASS installation directory
+        result_queue: Queue to put results (dict with paths or error)
+        event_queue: Queue to put SSE events for progress updates
+    """
+    from ai_service import get_ai_provider
+    from document_gen import save_cover_letter_document
+
+    try:
+        with app.app_context():
+            event_queue.put({'status': 'Generating...', 'source': 'cover_letter'})
+
+            # Get custom prompts
+            resume_prompt = AppSettings.get('resume_prompt')
+            cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+
+            # Initialize AI provider
+            ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                resume_prompt, cover_letter_prompt)
+
+            # Generate cover letter
+            if ai_config.provider == 'claude-cli':
+                cover_letter = ai.generate_cover_letter(
+                    resume_content, desc_text, company, title, app_dir, hiring_manager
+                )
+            else:
+                cover_letter = ai.generate_cover_letter(
+                    resume_content, desc_text, company, title, hiring_manager
+                )
+
+            event_queue.put({'status': 'Generating PDF...', 'source': 'cover_letter'})
+
+            # Save cover letter document (MD and PDF)
+            from config import Config
+
+            paths = save_cover_letter_document(
+                job_id, cover_letter, Config.APPLICATIONS_DIR,
+                company=company,
+                first_name=applicant_info.get('first_name'),
+                last_name=applicant_info.get('last_name'),
+                script_dir=jass_dir
+            )
+
+            # Put successful result in queue
+            result_queue.put({
+                'success': True,
+                'paths': paths
+            })
+
+            event_queue.put({'status': 'Done', 'source': 'cover_letter'})
+            log.info(f"Cover letter generation completed for job {job_id}")
+
+    except Exception as e:
+        log.error(f"Error in cover letter thread for job {job_id}: {e}", exc_info=True)
+        result_queue.put({
+            'success': False,
+            'error': str(e)
+        })
+        event_queue.put({'error': f'Cover letter generation failed: {str(e)}'})
+
+
 @app.route('/jobs/<int:id>/tailor-resume-stream')
 def tailor_resume_stream(id):
-    """Generate tailored resume only with SSE progress updates."""
-    from ai_service import get_ai_provider
-    from document_gen import save_resume_document, extract_applicant_info, get_application_folder_name
+    """Generate tailored resume only with SSE progress updates using threading."""
+    from document_gen import extract_applicant_info, get_application_folder_name
+    import time
 
     def generate():
         with app.app_context():
@@ -908,14 +1277,7 @@ def tailor_resume_stream(id):
                 return
 
             try:
-                yield f"data: {json.dumps({'status': 'Initializing AI...'})}\n\n"
-
-                # Get custom prompts
-                resume_prompt = AppSettings.get('resume_prompt')
-                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
-
-                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
-                                     resume_prompt, cover_letter_prompt)
+                yield f"data: {json.dumps({'status': 'Initializing...'})}\n\n"
 
                 # Get plain text description
                 from bs4 import BeautifulSoup
@@ -925,49 +1287,80 @@ def tailor_resume_stream(id):
                 folder_name = get_application_folder_name(job.company, job.id)
                 app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
 
-                # Generate tailored resume
-                yield f"data: {json.dumps({'status': 'Tailoring resume...'})}\n\n"
-                if ai_config.provider == 'claude-cli':
-                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text, app_dir)
-                else:
-                    tailored_resume = ai.generate_tailored_resume(master_resume.content, desc_text)
-
-                # Save resume document
-                yield f"data: {json.dumps({'status': 'Generating PDF...'})}\n\n"
+                # Extract applicant info for file naming
                 applicant_info = extract_applicant_info(master_resume.content)
+                applicant_info['company'] = job.company
                 jass_dir = os.path.dirname(os.path.abspath(__file__))
 
-                paths = save_resume_document(
-                    job.id, tailored_resume, Config.APPLICATIONS_DIR,
-                    company=job.company,
-                    first_name=applicant_info.get('first_name'),
-                    last_name=applicant_info.get('last_name'),
-                    script_dir=jass_dir
+                # Create queues for thread communication
+                result_queue = queue.Queue()
+                event_queue = queue.Queue()
+
+                # Start resume generation thread
+                resume_thread = threading.Thread(
+                    target=generate_resume_threaded,
+                    args=(job.id, master_resume.content, desc_text, ai_config,
+                          app_dir, applicant_info, jass_dir, result_queue, event_queue),
+                    daemon=True
                 )
+                resume_thread.start()
 
-                # Create or update application
-                application = job.application
-                if not application:
-                    application = Application(job_id=job.id)
-                    db.session.add(application)
+                # Stream events from the thread
+                thread_finished = False
+                while not thread_finished:
+                    try:
+                        # Check for events from thread (non-blocking)
+                        event = event_queue.get(timeout=0.1)
+                        yield f"data: {json.dumps(event)}\n\n"
+                    except queue.Empty:
+                        # No events yet, check if thread is still alive
+                        if not resume_thread.is_alive():
+                            thread_finished = True
+                        else:
+                            # Send heartbeat to keep connection alive
+                            time.sleep(0.5)
 
-                application.resume_md = paths.get('resume_md')
-                application.resume_pdf = paths.get('resume_pdf')
-                application.ai_provider = ai_config.provider
-                application.ai_model = ai_config.model_name
-                application.tailored_at = datetime.utcnow()
-                application.status = 'ready'
-                application.first_name = applicant_info.get('first_name', '')
-                application.last_name = applicant_info.get('last_name', '')
-                application.email = applicant_info.get('email', '')
-                application.phone = applicant_info.get('phone', '')
+                # Wait for thread to complete and get result
+                resume_thread.join(timeout=5)
 
-                job.status = 'ready'
-                db.session.commit()
+                # Get the result
+                try:
+                    result = result_queue.get(timeout=1)
+                except queue.Empty:
+                    raise Exception("Resume generation thread did not return a result")
 
-                log.info(f"Resume saved successfully for application {application.id}")
-                redirect_url = f"/applications/{application.id}"
-                yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
+                # Check if generation was successful
+                if not result.get('success'):
+                    error_msg = result.get('error', 'Unknown error in resume generation')
+                    raise Exception(error_msg)
+
+                paths = result['paths']
+
+                # Update database with results (thread-safe)
+                with app.app_context():
+                    job = Job.query.get(id)
+                    application = job.application
+                    if not application:
+                        application = Application(job_id=job.id)
+                        db.session.add(application)
+
+                    application.resume_md = paths.get('resume_md')
+                    application.resume_pdf = paths.get('resume_pdf')
+                    application.ai_provider = ai_config.provider
+                    application.ai_model = ai_config.model_name
+                    application.tailored_at = datetime.utcnow()
+                    application.status = 'ready'
+                    application.first_name = applicant_info.get('first_name', '')
+                    application.last_name = applicant_info.get('last_name', '')
+                    application.email = applicant_info.get('email', '')
+                    application.phone = applicant_info.get('phone', '')
+
+                    job.status = 'ready'
+                    db.session.commit()
+
+                    log.info(f"Resume saved successfully for application {application.id}")
+                    redirect_url = f"/applications/{application.id}"
+                    yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
 
             except Exception as e:
                 log.error(f"Error generating resume: {e}", exc_info=True)
@@ -1346,6 +1739,40 @@ def delete_resume(id):
     return redirect(url_for('resume'))
 
 
+@app.route('/resume/<int:id>/pdf')
+def download_resume_pdf(id):
+    """Generate and download master resume as PDF."""
+    from document_gen import generate_pdf, extract_applicant_info
+    import tempfile
+
+    resume = MasterResume.query.get_or_404(id)
+
+    if not resume.content:
+        flash('Resume has no content to export', 'warning')
+        return redirect(url_for('resume', id=id))
+
+    # Extract applicant info for filename
+    info = extract_applicant_info(resume.content)
+    applicant_name = info.get('name', 'Resume').replace(' ', '_')
+
+    # Create temp file for PDF
+    temp_dir = tempfile.mkdtemp()
+    pdf_filename = f"{applicant_name}.pdf"
+    pdf_path = os.path.join(temp_dir, pdf_filename)
+
+    # Generate PDF
+    if generate_pdf(resume.content, pdf_path, 'resume'):
+        return send_file(
+            pdf_path,
+            as_attachment=True,
+            download_name=pdf_filename,
+            mimetype='application/pdf'
+        )
+    else:
+        flash('Failed to generate PDF. Please check that md-to-pdf is installed.', 'danger')
+        return redirect(url_for('resume', id=id))
+
+
 # ============ Settings ============
 
 @app.route('/settings')
@@ -1416,14 +1843,28 @@ def test_settings():
             import shutil
             try:
                 # Find claude executable (handles PATH issues)
-                claude_cmd = shutil.which('claude') or 'claude'
-                result = subprocess.run(
-                    [claude_cmd, '-p', 'Reply with just the word: OK', '--model', config.model_name or 'claude-sonnet-4-20250514'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    shell=(os.name == 'nt')  # Use shell on Windows for better PATH resolution
-                )
+                claude_cmd = shutil.which('claude')
+                model = config.model_name or 'claude-sonnet-4-20250514'
+
+                if claude_cmd:
+                    # Full path found, no need for shell
+                    result = subprocess.run(
+                        [claude_cmd, '-p', 'Reply with just the word: OK', '--model', model],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        shell=False
+                    )
+                else:
+                    # Fallback: use shell on Windows for PATH resolution
+                    cmd = f'claude -p "Reply with just the word: OK" --model {model}'
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        shell=True
+                    )
                 if result.returncode == 0 and 'OK' in result.stdout:
                     return jsonify({'success': True, 'message': f'Claude CLI working (model: {config.model_name})'})
                 else:
@@ -1608,6 +2049,106 @@ def get_ollama_models():
     return jsonify({
         'available': len(models) > 0,
         'models': models
+    })
+
+
+@app.route('/settings/claude-models')
+def get_claude_models():
+    """Get list of available Claude models by querying the Anthropic API."""
+    import shutil
+    import subprocess
+
+    models = []
+    source = None
+
+    # Try 1: Use Anthropic API if we have an API key
+    config = AIConfig.query.filter_by(provider='claude', is_active=True).first()
+    if not config:
+        config = AIConfig.query.filter_by(provider='claude').first()
+
+    if config and config.api_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=config.api_key)
+            response = client.models.list(limit=100)
+            for model in response.data:
+                model_id = model.id
+                # Only include chat models
+                if not any(x in model_id for x in ['claude-3', 'claude-sonnet', 'claude-opus', 'claude-haiku']):
+                    continue
+                display = model.display_name if hasattr(model, 'display_name') else model_id
+                models.append({'id': model_id, 'name': display})
+            source = 'api'
+            log.info(f"Fetched {len(models)} Claude models from Anthropic API")
+        except Exception as e:
+            log.warning(f"Failed to fetch models from Anthropic API: {e}")
+
+    # Try 2: Use Claude CLI to ask for available models
+    if not models:
+        try:
+            import re
+            claude_cmd = shutil.which('claude') or 'claude'
+            use_shell = not shutil.which('claude') and os.name == 'nt'
+            prompt = "Show list of available models"
+            if use_shell:
+                cmd_str = f'claude -p "{prompt}"'
+                result = subprocess.run(cmd_str, capture_output=True,
+                                        text=True, encoding='utf-8', errors='replace',
+                                        timeout=30, shell=True)
+            else:
+                result = subprocess.run(
+                    [claude_cmd, '-p', prompt],
+                    capture_output=True, text=True, encoding='utf-8', errors='replace',
+                    timeout=30, shell=False)
+            if result.returncode == 0 and result.stdout.strip():
+                # Parse markdown table rows: | Name | `model-id` |
+                # Match lines like: | Claude Opus 4.6 | `claude-opus-4-6` |
+                table_rows = re.findall(
+                    r'\|\s*([^|]+?)\s*\|\s*`?(claude-[\w.-]+)`?\s*\|',
+                    result.stdout
+                )
+                seen = set()
+                for name, model_id in table_rows:
+                    name = name.strip()
+                    model_id = model_id.strip()
+                    # Skip table header rows
+                    if model_id in seen or name.lower() in ('model', 'id', '---', ''):
+                        continue
+                    seen.add(model_id)
+                    models.append({'id': model_id, 'name': name})
+
+                # Fallback: if table parsing failed, extract IDs with regex
+                if not models:
+                    found_ids = re.findall(r'claude-[\w.-]+', result.stdout)
+                    for model_id in found_ids:
+                        if model_id not in seen:
+                            seen.add(model_id)
+                            display = model_id.replace('-', ' ').title()
+                            models.append({'id': model_id, 'name': display})
+
+                if models:
+                    source = 'cli'
+                    log.info(f"Fetched {len(models)} Claude models from CLI: {[(m['name'], m['id']) for m in models]}")
+        except Exception as e:
+            log.warning(f"Failed to fetch models from Claude CLI: {e}")
+
+    # Fallback: hardcoded list of current models
+    if not models:
+        models = [
+            {'id': 'claude-opus-4-6', 'name': 'Claude Opus 4.6'},
+            {'id': 'claude-sonnet-4-6', 'name': 'Claude Sonnet 4.6'},
+            {'id': 'claude-haiku-4-5-20251001', 'name': 'Claude Haiku 4.5'},
+            {'id': 'claude-sonnet-4-20250514', 'name': 'Claude Sonnet 4'},
+            {'id': 'claude-opus-4-20250514', 'name': 'Claude Opus 4'},
+            {'id': 'claude-3-5-sonnet-20241022', 'name': 'Claude 3.5 Sonnet'},
+            {'id': 'claude-3-5-haiku-20241022', 'name': 'Claude 3.5 Haiku'},
+        ]
+        source = 'fallback'
+
+    return jsonify({
+        'available': len(models) > 0,
+        'models': models,
+        'source': source
     })
 
 

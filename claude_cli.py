@@ -10,13 +10,15 @@ from ai_service import _clean_cover_letter
 
 log = get_logger('claude_cli')
 
-# Use shell=True on Windows for better PATH resolution
-_USE_SHELL = os.name == 'nt'
-
 
 def _get_claude_cmd():
     """Get the claude command, handling PATH issues."""
-    return shutil.which('claude') or 'claude'
+    # Try to get full path - if found, we don't need shell=True
+    full_path = shutil.which('claude')
+    if full_path:
+        return full_path, False  # Return (cmd, use_shell)
+    # Fallback: use 'claude' with shell=True on Windows for PATH resolution
+    return 'claude', (os.name == 'nt')
 
 
 class ClaudeCLIProvider:
@@ -25,18 +27,12 @@ class ClaudeCLIProvider:
     def __init__(self, model: str = "claude-sonnet-4-20250514",
                  resume_prompt: str = None, cover_letter_prompt: str = None):
         self.model = model
-        self.claude_cmd = _get_claude_cmd()
+        self.claude_cmd, self.use_shell = _get_claude_cmd()
         self.resume_prompt = resume_prompt
         self.cover_letter_prompt = cover_letter_prompt
         # Verify claude is available
         try:
-            result = subprocess.run(
-                [self.claude_cmd, '--version'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                shell=_USE_SHELL
-            )
+            result = self._run_cmd([self.claude_cmd, '--version'], timeout=10)
             if result.returncode != 0:
                 raise RuntimeError(f"Claude CLI not available: {result.stderr}")
             log.info(f"Claude CLI available: {result.stdout.strip()}")
@@ -44,6 +40,44 @@ class ClaudeCLIProvider:
             raise RuntimeError("Claude CLI not found. Please install it first.")
         except subprocess.TimeoutExpired:
             raise RuntimeError("Claude CLI timed out")
+
+    def _run_cmd(self, cmd_list, timeout=300, cwd=None, input_text=None):
+        """Run a command, handling shell mode and encoding correctly on Windows."""
+        if self.use_shell:
+            # When using shell=True, join into a proper command string
+            import shlex
+            # On Windows, we need to quote arguments properly
+            if os.name == 'nt':
+                # Simple quoting for Windows - wrap args with spaces in quotes
+                cmd_str = ' '.join(
+                    f'"{arg}"' if ' ' in arg or '"' in arg else arg
+                    for arg in cmd_list
+                )
+            else:
+                cmd_str = shlex.join(cmd_list)
+            return subprocess.run(
+                cmd_str,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=timeout,
+                cwd=cwd,
+                input=input_text,
+                shell=True
+            )
+        else:
+            return subprocess.run(
+                cmd_list,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=timeout,
+                cwd=cwd,
+                input=input_text,
+                shell=False
+            )
 
     def generate_tailored_resume(self, master_resume: str, job_description: str,
                                   app_dir: str) -> str:
@@ -61,15 +95,6 @@ class ClaudeCLIProvider:
         app_path = Path(app_dir)
         app_path.mkdir(parents=True, exist_ok=True)
 
-        # Save input files
-        resume_path = app_path / 'resume.md'
-        desc_path = app_path / 'description.md'
-        output_path = app_path / 'tailored_resume.md'
-
-        resume_path.write_text(master_resume, encoding='utf-8')
-        desc_path.write_text(job_description, encoding='utf-8')
-        log.info(f"Saved input files to {app_dir}")
-
         # Use custom prompt if provided, otherwise use default
         base_instructions = self.resume_prompt or """You are an expert resume writer. Your task is to tailor a resume for a specific job posting.
 
@@ -83,47 +108,42 @@ INSTRUCTIONS:
 7. Keep all job dates, titles, and companies exactly as they appear
 8. Ensure the resume is ATS-friendly"""
 
-        # Create full prompt and save to file
-        prompt_path = app_path / 'prompt.txt'
+        # Build full prompt with content inline (Claude CLI -p doesn't have file access)
         full_prompt = f"""{base_instructions}
 
-Read the master resume from: {resume_path}
-Read the job description from: {desc_path}
+MASTER RESUME:
+{master_resume}
 
-Write the tailored resume in Markdown format to: {output_path}
+JOB DESCRIPTION:
+{job_description}
 
-Return ONLY "Done" when complete."""
-        prompt_path.write_text(full_prompt, encoding='utf-8')
-
-        # Simple command that reads prompt from file
-        simple_prompt = f"Read and execute the instructions in {prompt_path}"
+Return ONLY the tailored resume in Markdown format, no explanations or preamble."""
 
         log.info("Calling Claude CLI for resume generation...")
-        cmd = [self.claude_cmd, '-p', simple_prompt, '--model', self.model, '--dangerously-skip-permissions']
-        log.debug(f"Command: {self.claude_cmd} -p \"{simple_prompt}\" --model {self.model} --dangerously-skip-permissions")
-        log.debug(f"Working directory: {app_path}")
-        log.debug(f"Prompt file: {prompt_path}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-            cwd=str(app_path),
-            shell=_USE_SHELL
-        )
+        cmd = [self.claude_cmd, '-p', '-', '--model', self.model]
+        log.debug(f"Prompt length: {len(full_prompt)} chars")
+        result = self._run_cmd(cmd, timeout=300, input_text=full_prompt)
 
         if result.returncode != 0:
-            log.error(f"Claude CLI error: {result.stderr}")
-            raise RuntimeError(f"Claude CLI failed: {result.stderr}")
+            log.error(f"Claude CLI error (rc={result.returncode}): stderr={result.stderr[:500]}")
+            raise RuntimeError(f"Claude CLI failed: {result.stderr or 'Unknown error'}")
 
-        log.debug(f"Claude CLI output: {result.stdout[:500]}...")
+        tailored_resume = result.stdout.strip()
 
-        # Read the generated resume
-        if not output_path.exists():
-            raise RuntimeError(f"Claude CLI did not create output file: {output_path}")
+        if not tailored_resume:
+            log.error(f"Claude CLI returned empty output. stderr={result.stderr[:500] if result.stderr else 'none'}")
+            raise RuntimeError("Claude CLI returned empty resume. Check Claude CLI is working correctly.")
 
-        tailored_resume = output_path.read_text(encoding='utf-8')
+        # Sanity check: a resume should have reasonable content
+        if len(tailored_resume) < 200:
+            log.warning(f"Claude CLI returned suspiciously short resume ({len(tailored_resume)} chars): {tailored_resume[:200]}")
+            raise RuntimeError(f"Claude CLI returned invalid resume (only {len(tailored_resume)} chars). Output: {tailored_resume[:200]}")
+
         log.info(f"Generated tailored resume: {len(tailored_resume)} chars")
+
+        # Save for reference
+        output_path = app_path / 'tailored_resume.md'
+        output_path.write_text(tailored_resume, encoding='utf-8')
 
         return tailored_resume
 
@@ -145,15 +165,7 @@ Return ONLY "Done" when complete."""
             The cover letter content (markdown)
         """
         app_path = Path(app_dir)
-
-        # The resume should already be saved as tailored_resume.md
-        resume_path = app_path / 'tailored_resume.md'
-        desc_path = app_path / 'description.md'
-        output_path = app_path / 'cover_letter.md'
-
-        # Ensure resume is saved (in case it wasn't from generate_tailored_resume)
-        if not resume_path.exists():
-            resume_path.write_text(resume, encoding='utf-8')
+        app_path.mkdir(parents=True, exist_ok=True)
 
         # Use custom prompt if provided, otherwise use default
         base_instructions = self.cover_letter_prompt or """You are an expert cover letter writer. Create a compelling cover letter for a job application.
@@ -170,61 +182,54 @@ INSTRUCTIONS:
 9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
 10. Extract the applicant's name from the resume and use it in the signature"""
 
-        # Create full prompt and save to file
-        prompt_path = app_path / 'prompt.txt'
-
         # Build greeting instruction
         if hiring_manager:
             greeting_instruction = f"HIRING MANAGER: {hiring_manager} (use 'Dear {hiring_manager},' as the greeting)"
         else:
             greeting_instruction = "HIRING MANAGER: Unknown (use 'Dear Hiring Manager,' as the greeting)"
 
+        # Build full prompt with content inline (Claude CLI -p doesn't have file access)
         full_prompt = f"""{base_instructions}
 
-Read the tailored resume from: {resume_path}
-Read the job description from: {desc_path}
+RESUME:
+{resume}
+
+JOB DESCRIPTION:
+{job_description}
 
 COMPANY: {company}
 POSITION: {job_title}
 {greeting_instruction}
 
-Write the cover letter in Markdown format to: {output_path}
-
-Return ONLY "Done" when complete."""
-        prompt_path.write_text(full_prompt, encoding='utf-8')
-
-        # Simple command that reads prompt from file
-        simple_prompt = f"Read and execute the instructions in {prompt_path}"
+Return ONLY the cover letter in Markdown format, no explanations or preamble."""
 
         log.info("Calling Claude CLI for cover letter generation...")
-        cmd = [self.claude_cmd, '-p', simple_prompt, '--model', self.model, '--dangerously-skip-permissions']
-        log.debug(f"Command: {self.claude_cmd} -p \"{simple_prompt}\" --model {self.model} --dangerously-skip-permissions")
-        log.debug(f"Working directory: {app_path}")
-        log.debug(f"Prompt file: {prompt_path}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,  # 3 minute timeout
-            cwd=str(app_path),
-            shell=_USE_SHELL
-        )
+        cmd = [self.claude_cmd, '-p', '-', '--model', self.model]
+        log.debug(f"Prompt length: {len(full_prompt)} chars")
+        result = self._run_cmd(cmd, timeout=180, input_text=full_prompt)
 
         if result.returncode != 0:
-            log.error(f"Claude CLI error: {result.stderr}")
-            raise RuntimeError(f"Claude CLI failed: {result.stderr}")
+            log.error(f"Claude CLI error (rc={result.returncode}): stderr={result.stderr[:500]}")
+            raise RuntimeError(f"Claude CLI failed: {result.stderr or 'Unknown error'}")
 
-        log.debug(f"Claude CLI output: {result.stdout[:500]}...")
+        cover_letter = result.stdout.strip()
 
-        # Read the generated cover letter
-        if not output_path.exists():
-            raise RuntimeError(f"Claude CLI did not create output file: {output_path}")
+        if not cover_letter:
+            log.error(f"Claude CLI returned empty output. stderr={result.stderr[:500] if result.stderr else 'none'}")
+            raise RuntimeError("Claude CLI returned empty cover letter. Check Claude CLI is working correctly.")
 
-        cover_letter = output_path.read_text(encoding='utf-8')
+        if len(cover_letter) < 100:
+            log.warning(f"Claude CLI returned suspiciously short cover letter ({len(cover_letter)} chars): {cover_letter[:200]}")
+            raise RuntimeError(f"Claude CLI returned invalid cover letter (only {len(cover_letter)} chars). Output: {cover_letter[:200]}")
+
         log.info(f"Generated cover letter: {len(cover_letter)} chars")
 
         # Clean up placeholder text if any slipped through
         cover_letter = _clean_cover_letter(cover_letter)
+
+        # Save for reference
+        output_path = app_path / 'cover_letter.md'
+        output_path.write_text(cover_letter, encoding='utf-8')
 
         return cover_letter
 
@@ -267,14 +272,7 @@ Return ONLY "Done" when complete."""
 
         # Use stdin for long prompts to avoid command line length limits
         cmd = [self.claude_cmd, '-p', '-', '--model', self.model, '--dangerously-skip-permissions']
-        result = subprocess.run(
-            cmd,
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,  # 2 minute timeout
-            shell=_USE_SHELL
-        )
+        result = self._run_cmd(cmd, timeout=120, input_text=full_prompt)
 
         if result.returncode != 0:
             log.error(f"Claude CLI error: {result.stderr}")
@@ -286,14 +284,13 @@ Return ONLY "Done" when complete."""
 def is_claude_cli_available() -> bool:
     """Check if Claude CLI is available on the system."""
     try:
-        claude_cmd = _get_claude_cmd()
-        result = subprocess.run(
-            [claude_cmd, '--version'],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            shell=_USE_SHELL
-        )
+        claude_cmd, use_shell = _get_claude_cmd()
+        if use_shell:
+            # When using shell=True, pass as string
+            cmd = f'"{claude_cmd}" --version' if ' ' in claude_cmd else f'{claude_cmd} --version'
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, shell=True)
+        else:
+            result = subprocess.run([claude_cmd, '--version'], capture_output=True, text=True, timeout=5, shell=False)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

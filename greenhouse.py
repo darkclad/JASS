@@ -26,38 +26,71 @@ class GreenhouseClient:
         self.session = requests.Session()
         self.session.headers.update(self.HEADERS)
 
-    def get_jobs(self, board_token: str, content: bool = True) -> List[Dict]:
+    def get_jobs(self, board_token: str, content: bool = True,
+                 _session: requests.Session = None) -> List[Dict]:
         """
-        Get all jobs from a Greenhouse board.
+        Get all jobs from a Greenhouse board with retry on rate-limiting.
 
         Args:
             board_token: The company's Greenhouse board token (e.g., 'sentinellabs')
             content: Whether to include full job description
+            _session: Optional session to use (for thread-safe parallel calls)
 
         Returns:
             List of job dictionaries
         """
+        session = _session or self.session
         url = f"{self.BASE_URL}/{board_token}/jobs"
         params = {'content': 'true'} if content else {}
 
-        log.debug(f"Fetching jobs from {board_token}: {url}")
-        try:
-            response = self.session.get(url, params=params, timeout=15)
-            if response.status_code == 404:
-                log.warning(f"Board not found: {board_token}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            log.debug(f"Fetching jobs from {board_token}: {url} (attempt {attempt + 1})")
+            try:
+                response = session.get(url, params=params, timeout=15)
+
+                if response.status_code == 404:
+                    log.warning(f"Board not found: {board_token}")
+                    return []
+
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
+                    log.warning(f"Rate limited on {board_token}, retrying in {retry_after}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_after)
+                    continue
+
+                if response.status_code >= 500:
+                    log.warning(f"Server error {response.status_code} on {board_token}, retrying (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(1 * (attempt + 1))
+                    continue
+
+                response.raise_for_status()
+
+                data = response.json()
+                jobs = data.get('jobs', [])
+                log.info(f"Found {len(jobs)} jobs from {board_token}")
+
+                return [self._parse_job(job, board_token) for job in jobs]
+
+            except requests.ConnectionError as e:
+                log.warning(f"Connection error for {board_token} (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (attempt + 1))
+                    continue
+                log.error(f"Failed to connect to {board_token} after {max_retries} attempts")
                 return []
-            response.raise_for_status()
+            except requests.Timeout:
+                log.warning(f"Timeout for {board_token} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    continue
+                log.error(f"Timed out on {board_token} after {max_retries} attempts")
+                return []
+            except requests.RequestException as e:
+                log.error(f"Error fetching jobs from {board_token}: {e}")
+                return []
 
-            data = response.json()
-            jobs = data.get('jobs', [])
-            log.info(f"Found {len(jobs)} jobs from {board_token}")
-
-            # Parse and normalize jobs
-            return [self._parse_job(job, board_token) for job in jobs]
-
-        except requests.RequestException as e:
-            log.error(f"Error fetching jobs from {board_token}: {e}")
-            return []
+        log.error(f"All {max_retries} retries exhausted for {board_token}")
+        return []
 
     def get_job(self, board_token: str, job_id: str) -> Optional[Dict]:
         """
@@ -91,7 +124,7 @@ class GreenhouseClient:
     def search_jobs(self, keywords: List[str], board_tokens: List[str],
                     location_filter: Optional[str] = None) -> List[Dict]:
         """
-        Search for jobs matching keywords across multiple boards.
+        Search for jobs matching keywords across multiple boards (parallel).
 
         Args:
             keywords: List of keywords to match (OR logic)
@@ -101,43 +134,68 @@ class GreenhouseClient:
         Returns:
             List of matching jobs
         """
-        log.info(f"Searching {len(board_tokens)} boards for keywords: {keywords}")
         all_jobs = []
+        for board_token, jobs, error in self.search_jobs_streaming(keywords, board_tokens, location_filter):
+            all_jobs.extend(jobs)
+
+        all_jobs.sort(key=lambda j: j.get('posted_at') or '', reverse=True)
+        log.info(f"Search complete: found {len(all_jobs)} matching jobs")
+        return all_jobs
+
+    def search_jobs_streaming(self, keywords: List[str], board_tokens: List[str],
+                              location_filter: Optional[str] = None):
+        """
+        Search boards in parallel, yielding (board_token, matching_jobs, error) as each board completes.
+
+        Each thread gets its own requests.Session for thread safety.
+
+        Yields:
+            Tuples of (board_token, list_of_matching_jobs, error_string_or_None)
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        log.info(f"Searching {len(board_tokens)} boards in parallel for keywords: {keywords}")
         keywords_lower = [kw.lower() for kw in keywords]
 
-        for board_token in board_tokens:
-            log.debug(f"Searching board: {board_token}")
-            jobs = self.get_jobs(board_token)
+        def search_one_board(board_token):
+            """Fetch and filter jobs for a single board using a thread-local session."""
+            # Each thread gets its own session for thread safety
+            session = requests.Session()
+            session.headers.update(self.HEADERS)
 
+            log.debug(f"Searching board: {board_token}")
+            try:
+                jobs = self.get_jobs(board_token, _session=session)
+            finally:
+                session.close()
+
+            matching = []
             for job in jobs:
-                # Check if any keyword matches title or description
                 title_lower = job['title'].lower()
                 desc_lower = (job.get('description_text') or '').lower()
 
-                keyword_match = any(
-                    kw in title_lower or kw in desc_lower
-                    for kw in keywords_lower
-                )
-
-                if not keyword_match:
+                if not any(kw in title_lower or kw in desc_lower for kw in keywords_lower):
                     continue
 
-                # Apply location filter if specified
                 if location_filter:
                     location_lower = (job.get('location') or '').lower()
                     if location_filter.lower() not in location_lower:
                         continue
 
-                all_jobs.append(job)
+                matching.append(job)
+            return board_token, matching
 
-            # Rate limiting
-            time.sleep(0.3)
-
-        # Sort by posted_at (newest first)
-        all_jobs.sort(key=lambda j: j.get('posted_at') or '', reverse=True)
-
-        log.info(f"Search complete: found {len(all_jobs)} matching jobs")
-        return all_jobs
+        max_workers = min(len(board_tokens), 5)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(search_one_board, bt): bt for bt in board_tokens}
+            for future in as_completed(futures):
+                board_token = futures[future]
+                try:
+                    bt, jobs = future.result()
+                    yield bt, jobs, None
+                except Exception as e:
+                    log.error(f"Error searching board {board_token}: {e}")
+                    yield board_token, [], str(e)
 
     def _parse_job(self, job: Dict, board_token: str) -> Dict:
         """Parse and normalize a Greenhouse job response."""

@@ -281,14 +281,31 @@
                     if (otherBtn && otherBtn !== btn) otherBtn.disabled = true;
                 });
 
-                // Start timer (resets on each stage)
-                let stageStartTime = Date.now();
-                let currentStatus = 'Starting...';
+                // Track per-source statuses for parallel generation
+                let startTime = Date.now();
+                let sourceStatuses = {};  // {source: status} for parallel tracking
+                let currentStatus = 'Starting...';  // fallback for events without source
                 let timerInterval;
 
+                const sourceLabels = { resume: 'Resume', cover_letter: 'Cover letter' };
+
                 function updateStatus() {
-                    const elapsed = Math.floor((Date.now() - stageStartTime) / 1000);
-                    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                    const sources = Object.keys(sourceStatuses);
+                    let display;
+                    if (sources.length > 1) {
+                        // Parallel: show both statuses
+                        display = sources.map(s => {
+                            const label = sourceLabels[s] || s;
+                            const icon = sourceStatuses[s] === 'Done' ? '\u2713' : '\u2026';
+                            return icon + ' ' + label + ': ' + sourceStatuses[s];
+                        }).join(' &nbsp;|&nbsp; ');
+                    } else if (sources.length === 1) {
+                        display = sourceStatuses[sources[0]];
+                    } else {
+                        display = currentStatus;
+                    }
+                    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + display + ' (' + elapsed + 's)';
                 }
 
                 function resetButtons() {
@@ -322,8 +339,11 @@
                     }
 
                     if (data.status) {
-                        currentStatus = data.status;
-                        stageStartTime = Date.now();  // Reset timer for new stage
+                        if (data.source) {
+                            sourceStatuses[data.source] = data.status;
+                        } else {
+                            currentStatus = data.status;
+                        }
                         updateStatus();
                     }
 

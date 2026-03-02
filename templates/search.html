@@ -34,16 +34,16 @@
 <!-- Search Form -->
 <div class="card mb-4">
     <div class="card-body">
-        <form action="{{ url_for('search_jobs') }}" method="POST" id="searchForm">
+        <form id="searchForm">
             <div class="row g-3">
                 <div class="col-md-5">
                     <label class="form-label">Keywords</label>
-                    <input type="text" name="keywords" class="form-control"
+                    <input type="text" name="keywords" class="form-control" id="keywordsInput"
                            placeholder="C++ Senior Remote..." value="{{ keywords|default('') }}">
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">Location Filter</label>
-                    <input type="text" name="location" class="form-control"
+                    <input type="text" name="location" class="form-control" id="locationInput"
                            placeholder="Remote, San Diego..." value="{{ location|default('') }}">
                 </div>
                 <div class="col-md-3">
@@ -59,26 +59,22 @@
                     </button>
                 </div>
             </div>
+            <input type="hidden" name="refresh" id="refreshInput" value="0">
         </form>
     </div>
 </div>
 
-{% if results is not none %}
-<!-- Cache key for filter persistence -->
-<input type="hidden" id="searchCacheKey" value="{{ keywords|lower }}|{{ location|default('')|lower }}|{{ boards|default('')|lower }}">
-
-<!-- Filter Bar -->
-<div class="filter-bar mb-3">
+<!-- Filter Bar (hidden until search runs) -->
+<div class="filter-bar mb-3" id="filterBar" style="display: none;">
     <div class="row align-items-center">
-        {% if from_cache %}
-        <div class="col-auto">
-            <span class="badge bg-secondary" title="Cached at {{ cache_age.strftime('%Y-%m-%d %H:%M') if cache_age else 'unknown' }}">
+        <div class="col-auto" id="cacheBadge" style="display: none;">
+            <span class="badge bg-secondary">
                 <i class="bi bi-database"></i> Cached
             </span>
         </div>
-        {% endif %}
         <div class="col-auto">
-            <strong>{{ results|length }} jobs found</strong>
+            <strong><span id="totalJobCount">0</span> jobs found</strong>
+            <small class="text-muted ms-2" id="boardProgress"></small>
         </div>
         <div class="col-auto">
             <input type="text" id="filterTitle" class="form-control form-control-sm" placeholder="Filter by title...">
@@ -133,7 +129,6 @@
             <small class="text-muted"><i class="bi bi-bookmark"></i> Presets:</small>
         </div>
         <div class="col-auto" id="filterPresetsList">
-            <!-- Preset badges loaded dynamically -->
         </div>
         <div class="col-auto">
             <button type="button" class="btn btn-sm btn-outline-success" id="savePresetBtn" title="Save current filters as preset">
@@ -146,98 +141,133 @@
 <!-- Job Description Preview Tooltip -->
 <div id="jobPreviewTooltip" class="job-preview-tooltip"></div>
 
-<!-- Results -->
-<div id="resultsContainer">
-    {% for job in results %}
-    <div class="card job-card mb-2 {% if job.is_saved %}saved{% endif %}"
-         data-title="{{ job.title|lower }}"
-         data-company="{{ job.company|lower }}"
-         data-location="{{ job.location|lower }}"
-         data-saved="{{ 'saved' if job.is_saved else 'new' }}"
-         data-days="{{ job.freshness.days if job.freshness.days is not none else 999 }}"
-         data-description="{{ job.description|e }}"
-         data-greenhouse-id="{{ job.greenhouse_id }}"
-         data-board-token="{{ job.board_token }}"
-         data-url="{{ job.url }}"
-         data-department="{{ job.department|default('') }}">
-        <div class="card-body py-3">
-            <div class="row align-items-center">
-                <div class="col">
-                    <h6 class="mb-1">
-                        <span class="job-title-hover">{{ job.title }}</span>
-                        <span class="badge bg-{{ job.freshness.class }} ms-2" style="font-size: 0.7rem;">
-                            {{ job.freshness.label }}
-                        </span>
-                    </h6>
-                    <small class="text-muted">
-                        {{ job.company }} &bull; {{ job.location }}
-                        {% if job.department %} &bull; {{ job.department }}{% endif %}
-                    </small>
-                </div>
-                <div class="col-auto">
-                    {% if job.is_saved %}
-                    <a href="{{ url_for('job_detail', id=job.saved_id) }}" class="btn btn-sm btn-success">
-                        <i class="bi bi-check"></i> Saved
-                    </a>
-                    {% else %}
-                    <button class="btn btn-sm btn-outline-primary save-job-btn"
-                            data-job='{{ job|tojson }}'>
-                        <i class="bi bi-bookmark"></i> Save
-                    </button>
-                    {% endif %}
-                    <a href="{{ job.url }}" target="_blank" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-box-arrow-up-right"></i>
-                    </a>
-                </div>
-            </div>
+<!-- Results container (populated dynamically) -->
+<div id="resultsContainer"></div>
+
+<!-- Landing page (shown when no search active) -->
+<div id="landingPage">
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-search" style="font-size: 4rem;"></i>
+        <p class="mt-3">Enter keywords to search Greenhouse job boards</p>
+        <p class="small">Default boards: SentinelOne, Palo Alto Networks, Zscaler, Cloudflare, and more</p>
+    </div>
+
+    {% if recent_searches %}
+    <div class="card mt-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-clock-history"></i> Recent Searches</span>
+            <button type="button" class="btn btn-sm btn-outline-danger" id="clearSearchHistoryBtn" title="Clear all recent searches and cached data">
+                <i class="bi bi-trash"></i> Clear
+            </button>
+        </div>
+        <div class="card-body">
+            {% for search in recent_searches %}
+            <a href="#" class="badge bg-light text-dark me-2 mb-2 text-decoration-none search-history-link"
+               style="font-size: 0.9rem; cursor: pointer;"
+               data-keywords="{{ search.keywords }}"
+               data-location="{{ search.location or '' }}"
+               data-boards="{{ search.boards or '' }}">
+                {{ search.keywords }}
+                {% if search.location %}<span class="text-info">@ {{ search.location }}</span>{% endif %}
+                <span class="text-muted">({{ search.result_count }})</span>
+            </a>
+            {% endfor %}
         </div>
     </div>
-    {% else %}
-    <div class="text-center text-muted py-5">
-        <i class="bi bi-emoji-frown" style="font-size: 3rem;"></i>
-        <p class="mt-3">No jobs found matching your keywords</p>
-    </div>
-    {% endfor %}
+    {% endif %}
 </div>
-
-{% else %}
-<!-- No search yet -->
-<div class="text-center text-muted py-5">
-    <i class="bi bi-search" style="font-size: 4rem;"></i>
-    <p class="mt-3">Enter keywords to search Greenhouse job boards</p>
-    <p class="small">Default boards: SentinelOne, Palo Alto Networks, Zscaler, Cloudflare, and more</p>
-</div>
-
-{% if recent_searches %}
-<div class="card mt-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-clock-history"></i> Recent Searches</span>
-        <button type="button" class="btn btn-sm btn-outline-danger" id="clearSearchHistoryBtn" title="Clear all recent searches and cached data">
-            <i class="bi bi-trash"></i> Clear
-        </button>
-    </div>
-    <div class="card-body">
-        {% for search in recent_searches %}
-        <a href="#" class="badge bg-light text-dark me-2 mb-2 text-decoration-none search-history-link"
-           style="font-size: 0.9rem; cursor: pointer;"
-           data-keywords="{{ search.keywords }}"
-           data-location="{{ search.location or '' }}"
-           data-boards="{{ search.boards or '' }}">
-            {{ search.keywords }}
-            {% if search.location %}<span class="text-info">@ {{ search.location }}</span>{% endif %}
-            <span class="text-muted">({{ search.result_count }})</span>
-        </a>
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
-{% endif %}
 
 {% endblock %}
 
 {% block extra_js %}
 <script>
-// Reusable save job handler function
+// ============ Job Card Builder ============
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text || '';
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function buildJobCardHtml(job) {
+    const savedClass = job.is_saved ? 'saved' : '';
+    const freshness = job.freshness || { label: 'Unknown', class: 'secondary', days: 999 };
+    const days = freshness.days !== null && freshness.days !== undefined ? freshness.days : 999;
+
+    let actionBtn;
+    if (job.is_saved) {
+        actionBtn = `<a href="/jobs/${job.saved_id}" class="btn btn-sm btn-success"><i class="bi bi-check"></i> Saved</a>`;
+    } else {
+        actionBtn = `<button class="btn btn-sm btn-outline-primary save-job-btn" data-job='${escapeHtml(JSON.stringify(job))}'><i class="bi bi-bookmark"></i> Save</button>`;
+    }
+
+    return `<div class="card job-card mb-2 ${savedClass}"
+         data-title="${escapeHtml((job.title || '').toLowerCase())}"
+         data-company="${escapeHtml((job.company || '').toLowerCase())}"
+         data-location="${escapeHtml((job.location || '').toLowerCase())}"
+         data-saved="${job.is_saved ? 'saved' : 'new'}"
+         data-days="${days}"
+         data-description="${escapeHtml(job.description || '')}"
+         data-greenhouse-id="${escapeHtml(job.greenhouse_id)}"
+         data-board-token="${escapeHtml(job.board_token)}"
+         data-url="${escapeHtml(job.url || '')}"
+         data-department="${escapeHtml(job.department || '')}">
+        <div class="card-body py-3">
+            <div class="row align-items-center">
+                <div class="col">
+                    <h6 class="mb-1">
+                        <span class="job-title-hover">${escapeHtml(job.title)}</span>
+                        <span class="badge bg-${freshness.class} ms-2" style="font-size: 0.7rem;">${escapeHtml(freshness.label)}</span>
+                    </h6>
+                    <small class="text-muted">
+                        ${escapeHtml(job.company)} &bull; ${escapeHtml(job.location)}
+                        ${job.department ? ' &bull; ' + escapeHtml(job.department) : ''}
+                    </small>
+                </div>
+                <div class="col-auto">
+                    ${actionBtn}
+                    <a href="${escapeHtml(job.url)}" target="_blank" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-box-arrow-up-right"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+function attachCardHandlers(card) {
+    // Save button
+    const saveBtn = card.querySelector('.save-job-btn');
+    if (saveBtn) saveBtn.addEventListener('click', saveJobHandler);
+
+    // Click to save
+    card.addEventListener('click', cardClickHandler);
+
+    // Double-click to save and navigate
+    card.addEventListener('dblclick', cardDblClickHandler);
+
+    // Hover preview
+    const titleEl = card.querySelector('.job-title-hover');
+    if (titleEl) {
+        titleEl.addEventListener('mouseenter', titleHoverEnter);
+        titleEl.addEventListener('mouseleave', titleHoverLeave);
+    }
+}
+
+function addJobsToContainer(jobs) {
+    const container = document.getElementById('resultsContainer');
+    jobs.forEach(job => {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = buildJobCardHtml(job);
+        const card = wrapper.firstElementChild;
+        attachCardHandlers(card);
+        container.appendChild(card);
+    });
+    // Update count
+    document.getElementById('totalJobCount').textContent = container.querySelectorAll('.job-card').length;
+    applyFilters();
+}
+
+// ============ Save Job Handler ============
 async function saveJobHandler(e) {
     const btn = e?.target?.closest ? e.target.closest('.save-job-btn') || this : this;
     const jobData = JSON.parse(btn.dataset.job);
@@ -253,14 +283,12 @@ async function saveJobHandler(e) {
         const data = await response.json();
 
         if (data.success) {
-            // Replace button with a link to the saved job
             const link = document.createElement('a');
             link.href = `/jobs/${data.job_id}`;
             link.className = 'btn btn-sm btn-success';
             link.innerHTML = '<i class="bi bi-check"></i> Saved';
             btn.parentNode.replaceChild(link, btn);
 
-            // Update card state
             const card = link.closest('.job-card');
             card.classList.add('saved');
             card.dataset.saved = 'saved';
@@ -272,24 +300,131 @@ async function saveJobHandler(e) {
     }
 }
 
-// Attach save handler to all save buttons
-document.querySelectorAll('.save-job-btn').forEach(btn => {
-    btn.addEventListener('click', saveJobHandler);
+// ============ Card Click Handlers ============
+async function cardDblClickHandler(e) {
+    if (e.target.closest('button') || e.target.closest('a')) return;
+    const card = this;
+    if (card.classList.contains('saved')) {
+        const savedLink = card.querySelector('a.btn-success');
+        if (savedLink) window.location.href = savedLink.href;
+    } else {
+        const saveBtn = card.querySelector('.save-job-btn');
+        if (saveBtn && !saveBtn.disabled) {
+            const jobData = JSON.parse(saveBtn.dataset.job);
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+            try {
+                const response = await fetch('/search/save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(jobData)
+                });
+                const data = await response.json();
+                if (data.success) { window.location.href = `/jobs/${data.job_id}`; }
+                else { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save'; }
+            } catch (err) {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+            }
+        }
+    }
+}
+
+async function cardClickHandler(e) {
+    if (e.target.closest('button') || e.target.closest('a')) return;
+    const card = this;
+    if (e.ctrlKey || e.metaKey) {
+        if (card.classList.contains('saved')) {
+            const greenhouseId = card.dataset.greenhouseId;
+            if (!greenhouseId) return;
+            try {
+                const response = await fetch('/search/unsave', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({greenhouse_id: greenhouseId})
+                });
+                const data = await response.json();
+                if (data.success) {
+                    card.classList.remove('saved');
+                    card.dataset.saved = 'new';
+                    const savedLink = card.querySelector('a.btn-success');
+                    if (savedLink) {
+                        const jobData = {
+                            greenhouse_id: greenhouseId,
+                            board_token: card.dataset.boardToken,
+                            title: card.querySelector('.job-title-hover')?.textContent || '',
+                            company: card.dataset.company,
+                            location: card.dataset.location,
+                            url: card.dataset.url,
+                            description: card.dataset.description,
+                            department: card.dataset.department || ''
+                        };
+                        const newBtn = document.createElement('button');
+                        newBtn.className = 'btn btn-sm btn-outline-primary save-job-btn';
+                        newBtn.dataset.job = JSON.stringify(jobData);
+                        newBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
+                        newBtn.addEventListener('click', saveJobHandler);
+                        savedLink.parentNode.replaceChild(newBtn, savedLink);
+                    }
+                }
+            } catch (err) { alert('Error unsaving job: ' + err.message); }
+        } else {
+            const saveBtn = card.querySelector('.save-job-btn');
+            if (saveBtn && !saveBtn.disabled) saveBtn.click();
+        }
+    } else {
+        const saveBtn = card.querySelector('.save-job-btn');
+        if (saveBtn && !saveBtn.disabled) saveBtn.click();
+    }
+}
+
+// ============ Tooltip / Hover Preview ============
+const tooltip = document.getElementById('jobPreviewTooltip');
+let hoverTimeout;
+let isOverTooltip = false;
+
+function titleHoverEnter(e) {
+    const card = this.closest('.job-card');
+    const description = card?.dataset.description;
+    if (!description) return;
+    hoverTimeout = setTimeout(() => {
+        tooltip.innerHTML = description;
+        tooltip.scrollTop = 0;
+        tooltip.classList.add('visible');
+        const rect = this.getBoundingClientRect();
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+        let top = rect.bottom + scrollTop + 5;
+        let left = rect.left + scrollLeft;
+        if (left + 400 > window.innerWidth) left = window.innerWidth - 420 + scrollLeft;
+        if (top + 300 > window.innerHeight + scrollTop) top = rect.top + scrollTop - 310;
+        tooltip.style.top = top + 'px';
+        tooltip.style.left = left + 'px';
+    }, 300);
+}
+
+function titleHoverLeave() {
+    clearTimeout(hoverTimeout);
+    setTimeout(() => {
+        if (!isOverTooltip) { tooltip.classList.remove('visible'); tooltip.scrollTop = 0; }
+    }, 100);
+}
+
+tooltip?.addEventListener('mouseenter', () => { isOverTooltip = true; });
+tooltip?.addEventListener('mouseleave', () => { isOverTooltip = false; tooltip.classList.remove('visible'); tooltip.scrollTop = 0; });
+document.getElementById('resultsContainer')?.addEventListener('scroll', () => {
+    clearTimeout(hoverTimeout); isOverTooltip = false; tooltip.classList.remove('visible'); tooltip.scrollTop = 0;
 });
 
-// Country aliases for location filtering
+// ============ Filtering ============
 const COUNTRY_ALIASES = {
     'us': ['usa', 'u.s.', 'u.s.a.', 'united states', 'america', 'american'],
     'uk': ['united kingdom', 'great britain', 'britain', 'england', 'scotland', 'wales', 'british'],
-    'canada': ['canadian', 'ca'],
-    'germany': ['german', 'deutschland', 'de'],
-    'france': ['french', 'fr'],
-    'israel': ['israeli', 'il', 'tel aviv'],
+    'canada': ['canadian', 'ca'], 'germany': ['german', 'deutschland', 'de'],
+    'france': ['french', 'fr'], 'israel': ['israeli', 'il', 'tel aviv'],
     'india': ['indian', 'in', 'bangalore', 'mumbai', 'hyderabad'],
-    'australia': ['australian', 'au'],
-    'netherlands': ['dutch', 'holland', 'nl', 'amsterdam'],
-    'ireland': ['irish', 'ie', 'dublin'],
-    'singapore': ['sg'],
+    'australia': ['australian', 'au'], 'netherlands': ['dutch', 'holland', 'nl', 'amsterdam'],
+    'ireland': ['irish', 'ie', 'dublin'], 'singapore': ['sg'],
     'japan': ['japanese', 'jp', 'tokyo'],
     'remote': ['anywhere', 'worldwide', 'global', 'work from home', 'wfh']
 };
@@ -297,26 +432,14 @@ const COUNTRY_ALIASES = {
 function getLocationPatterns(input) {
     const normalized = input.toLowerCase().trim();
     if (!normalized) return [];
-
-    // Start with the input itself
     const patterns = [normalized];
-
-    // Check if input matches a country key and add all aliases
-    if (COUNTRY_ALIASES[normalized]) {
-        patterns.push(...COUNTRY_ALIASES[normalized]);
-    }
-
-    // Check if input matches any alias and add the key + all aliases
+    if (COUNTRY_ALIASES[normalized]) patterns.push(...COUNTRY_ALIASES[normalized]);
     for (const [country, aliases] of Object.entries(COUNTRY_ALIASES)) {
-        if (aliases.includes(normalized)) {
-            patterns.push(country, ...aliases);
-        }
+        if (aliases.includes(normalized)) patterns.push(country, ...aliases);
     }
-
-    return [...new Set(patterns)]; // Remove duplicates
+    return [...new Set(patterns)];
 }
 
-// Job type patterns for filtering
 const JOB_TYPE_PATTERNS = {
     'remote': ['remote', 'work from home', 'wfh', 'anywhere', 'worldwide', 'distributed'],
     'hybrid': ['hybrid'],
@@ -326,11 +449,9 @@ const JOB_TYPE_PATTERNS = {
 function matchesJobType(location, description, jobType) {
     if (!jobType) return true;
     const patterns = JOB_TYPE_PATTERNS[jobType] || [];
-    const searchText = (location + ' ' + description).toLowerCase();
-    return patterns.some(p => searchText.includes(p));
+    return patterns.some(p => (location + ' ' + description).toLowerCase().includes(p));
 }
 
-// Filtering
 function applyFilters() {
     const titleFilter = document.getElementById('filterTitle').value.toLowerCase();
     const companyFilter = document.getElementById('filterCompany').value.toLowerCase();
@@ -340,94 +461,38 @@ function applyFilters() {
     const locationFilter = document.getElementById('filterLocationInclude')?.value.toLowerCase() || '';
     const jobTypeFilter = document.getElementById('filterJobType')?.value || '';
 
-    // Parse comma-separated words
     const includeWords = includeFilter ? includeFilter.split(',').map(w => w.trim()).filter(w => w) : [];
     const excludeWords = excludeFilter ? excludeFilter.split(',').map(w => w.trim()).filter(w => w) : [];
-
-    // Parse company filter: support comma-separated, -prefix for exclusion
     const companyFilters = companyFilter ? companyFilter.split(',').map(w => w.trim()).filter(w => w) : [];
     const includeCompanies = companyFilters.filter(c => !c.startsWith('-'));
     const excludeCompanies = companyFilters.filter(c => c.startsWith('-')).map(c => c.substring(1).trim()).filter(c => c);
-
-    // Get location patterns (country + aliases)
     const locationPatterns = getLocationPatterns(locationFilter);
 
     let visibleCount = 0;
-    const totalCount = document.querySelectorAll('.job-card').length;
-
     document.querySelectorAll('.job-card').forEach(card => {
         const title = card.dataset.title;
         const company = card.dataset.company;
         const location = card.dataset.location || '';
         const saved = card.dataset.saved;
         const description = (card.dataset.description || '').toLowerCase();
-
-        // Combined searchable text (title + company + description)
         const searchableText = title + ' ' + company + ' ' + description;
 
         let show = true;
         if (titleFilter && !title.includes(titleFilter)) show = false;
-
-        // Company filter: include if matches ANY include pattern, exclude if matches ANY exclude pattern
         if (show && (includeCompanies.length > 0 || excludeCompanies.length > 0)) {
-            // If there are include filters, must match at least one
-            if (includeCompanies.length > 0) {
-                const matchesInclude = includeCompanies.some(c => company.includes(c));
-                if (!matchesInclude) show = false;
-            }
-            // If there are exclude filters, must not match any
-            if (show && excludeCompanies.length > 0) {
-                const matchesExclude = excludeCompanies.some(c => company.includes(c));
-                if (matchesExclude) show = false;
-            }
+            if (includeCompanies.length > 0 && !includeCompanies.some(c => company.includes(c))) show = false;
+            if (show && excludeCompanies.length > 0 && excludeCompanies.some(c => company.includes(c))) show = false;
         }
-
         if (savedFilter && saved !== savedFilter) show = false;
-
-        // Location filter: job location must match ANY of the country patterns
-        if (show && locationPatterns.length > 0) {
-            let locationMatch = false;
-            for (const pattern of locationPatterns) {
-                if (location.includes(pattern)) {
-                    locationMatch = true;
-                    break;
-                }
-            }
-            if (!locationMatch) show = false;
-        }
-
-        // Job type filter: Remote, Hybrid, On-site
-        if (show && jobTypeFilter) {
-            if (!matchesJobType(location, description, jobTypeFilter)) {
-                show = false;
-            }
-        }
-
-        // Include filter: job must contain ALL include words
-        if (show && includeWords.length > 0) {
-            for (const word of includeWords) {
-                if (!searchableText.includes(word)) {
-                    show = false;
-                    break;
-                }
-            }
-        }
-
-        // Exclude filter: job must NOT contain ANY exclude words
-        if (show && excludeWords.length > 0) {
-            for (const word of excludeWords) {
-                if (searchableText.includes(word)) {
-                    show = false;
-                    break;
-                }
-            }
-        }
+        if (show && locationPatterns.length > 0 && !locationPatterns.some(p => location.includes(p))) show = false;
+        if (show && jobTypeFilter && !matchesJobType(location, description, jobTypeFilter)) show = false;
+        if (show && includeWords.length > 0 && !includeWords.every(w => searchableText.includes(w))) show = false;
+        if (show && excludeWords.length > 0 && excludeWords.some(w => searchableText.includes(w))) show = false;
 
         card.style.display = show ? '' : 'none';
         if (show) visibleCount++;
     });
 
-    // Show/hide visible count badge when filters are active
     const filterCountEl = document.getElementById('filterCount');
     const hasActiveFilters = titleFilter || companyFilter || savedFilter || includeWords.length || excludeWords.length || locationPatterns.length || jobTypeFilter;
     if (filterCountEl) {
@@ -436,9 +501,15 @@ function applyFilters() {
     }
 }
 
-// Filter persistence using localStorage
-const cacheKeyEl = document.getElementById('searchCacheKey');
-const filterStorageKey = cacheKeyEl ? 'jass_filters_' + cacheKeyEl.value : null;
+// ============ Filter Persistence ============
+let filterStorageKey = null;
+
+function updateFilterStorageKey() {
+    const kw = document.getElementById('keywordsInput').value.toLowerCase();
+    const loc = document.getElementById('locationInput').value.toLowerCase();
+    const boards = document.getElementById('boardsInput').value.toLowerCase();
+    filterStorageKey = 'jass_filters_' + kw + '|' + loc + '|' + boards;
+}
 
 function saveFilters() {
     if (!filterStorageKey) return;
@@ -459,26 +530,20 @@ function restoreFilters() {
     try {
         const saved = localStorage.getItem(filterStorageKey);
         if (saved) {
-            const filters = JSON.parse(saved);
-            if (filters.title) document.getElementById('filterTitle').value = filters.title;
-            if (filters.company) document.getElementById('filterCompany').value = filters.company;
-            if (filters.saved) document.getElementById('filterSaved').value = filters.saved;
-            if (filters.include) document.getElementById('filterInclude').value = filters.include;
-            if (filters.exclude) document.getElementById('filterExclude').value = filters.exclude;
-            if (filters.location) document.getElementById('filterLocationInclude').value = filters.location;
-            if (filters.jobType) document.getElementById('filterJobType').value = filters.jobType;
+            const f = JSON.parse(saved);
+            if (f.title) document.getElementById('filterTitle').value = f.title;
+            if (f.company) document.getElementById('filterCompany').value = f.company;
+            if (f.saved) document.getElementById('filterSaved').value = f.saved;
+            if (f.include) document.getElementById('filterInclude').value = f.include;
+            if (f.exclude) document.getElementById('filterExclude').value = f.exclude;
+            if (f.location) document.getElementById('filterLocationInclude').value = f.location;
+            if (f.jobType) document.getElementById('filterJobType').value = f.jobType;
             applyFilters();
         }
-    } catch (e) {
-        console.warn('Failed to restore filters:', e);
-    }
+    } catch (e) { console.warn('Failed to restore filters:', e); }
 }
 
-// Apply filters and save on change
-function applyAndSaveFilters() {
-    applyFilters();
-    saveFilters();
-}
+function applyAndSaveFilters() { applyFilters(); saveFilters(); }
 
 document.getElementById('filterTitle')?.addEventListener('input', applyAndSaveFilters);
 document.getElementById('filterCompany')?.addEventListener('input', applyAndSaveFilters);
@@ -488,10 +553,6 @@ document.getElementById('filterExclude')?.addEventListener('input', applyAndSave
 document.getElementById('filterLocationInclude')?.addEventListener('input', applyAndSaveFilters);
 document.getElementById('filterJobType')?.addEventListener('change', applyAndSaveFilters);
 
-// Restore filters on page load
-restoreFilters();
-
-// Clear all filters
 document.getElementById('clearFiltersBtn')?.addEventListener('click', function() {
     document.getElementById('filterTitle').value = '';
     document.getElementById('filterCompany').value = '';
@@ -500,426 +561,244 @@ document.getElementById('clearFiltersBtn')?.addEventListener('click', function()
     document.getElementById('filterExclude').value = '';
     document.getElementById('filterLocationInclude').value = '';
     document.getElementById('filterJobType').value = '';
-    if (filterStorageKey) {
-        localStorage.removeItem(filterStorageKey);
-    }
+    if (filterStorageKey) localStorage.removeItem(filterStorageKey);
     applyFilters();
 });
 
 // ============ Filter Presets ============
 const PRESETS_STORAGE_KEY = 'jass_filter_presets';
-
-function getFilterPresets() {
-    try {
-        const data = localStorage.getItem(PRESETS_STORAGE_KEY);
-        return data ? JSON.parse(data) : {};
-    } catch (e) {
-        return {};
-    }
-}
-
-function saveFilterPresets(presets) {
-    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
-}
-
+function getFilterPresets() { try { return JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY)) || {}; } catch { return {}; } }
+function saveFilterPresets(presets) { localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets)); }
 function getCurrentFilters() {
-    return {
-        title: document.getElementById('filterTitle')?.value || '',
-        company: document.getElementById('filterCompany')?.value || '',
-        saved: document.getElementById('filterSaved')?.value || '',
-        include: document.getElementById('filterInclude')?.value || '',
-        exclude: document.getElementById('filterExclude')?.value || '',
-        location: document.getElementById('filterLocationInclude')?.value || '',
-        jobType: document.getElementById('filterJobType')?.value || ''
-    };
+    return { title: document.getElementById('filterTitle')?.value || '', company: document.getElementById('filterCompany')?.value || '',
+        saved: document.getElementById('filterSaved')?.value || '', include: document.getElementById('filterInclude')?.value || '',
+        exclude: document.getElementById('filterExclude')?.value || '', location: document.getElementById('filterLocationInclude')?.value || '',
+        jobType: document.getElementById('filterJobType')?.value || '' };
 }
-
-function applyPresetFilters(filters) {
-    document.getElementById('filterTitle').value = filters.title || '';
-    document.getElementById('filterCompany').value = filters.company || '';
-    document.getElementById('filterSaved').value = filters.saved || '';
-    document.getElementById('filterInclude').value = filters.include || '';
-    document.getElementById('filterExclude').value = filters.exclude || '';
-    document.getElementById('filterLocationInclude').value = filters.location || '';
-    document.getElementById('filterJobType').value = filters.jobType || '';
+function applyPresetFilters(f) {
+    document.getElementById('filterTitle').value = f.title || '';
+    document.getElementById('filterCompany').value = f.company || '';
+    document.getElementById('filterSaved').value = f.saved || '';
+    document.getElementById('filterInclude').value = f.include || '';
+    document.getElementById('filterExclude').value = f.exclude || '';
+    document.getElementById('filterLocationInclude').value = f.location || '';
+    document.getElementById('filterJobType').value = f.jobType || '';
     applyAndSaveFilters();
 }
 
 function renderFilterPresets() {
     const container = document.getElementById('filterPresetsList');
     if (!container) return;
-
     const presets = getFilterPresets();
-    const presetNames = Object.keys(presets);
-
-    if (presetNames.length === 0) {
-        container.innerHTML = '<small class="text-muted">No saved presets</small>';
-        return;
-    }
-
-    container.innerHTML = presetNames.map(name => `
-        <span class="badge bg-light text-dark me-1 preset-badge" style="cursor: pointer;" data-preset="${name}">
-            ${name}
-            <button type="button" class="btn-close btn-close-sm ms-1" style="font-size: 0.5rem;" data-delete-preset="${name}" title="Delete preset"></button>
-        </span>
-    `).join('');
-
-    // Add click handlers for presets
+    const names = Object.keys(presets);
+    if (names.length === 0) { container.innerHTML = '<small class="text-muted">No saved presets</small>'; return; }
+    container.innerHTML = names.map(n => `<span class="badge bg-light text-dark me-1 preset-badge" style="cursor: pointer;" data-preset="${n}">${n}<button type="button" class="btn-close btn-close-sm ms-1" style="font-size: 0.5rem;" data-delete-preset="${n}" title="Delete preset"></button></span>`).join('');
     container.querySelectorAll('.preset-badge').forEach(badge => {
         badge.addEventListener('click', function(e) {
-            // Ignore if clicking the delete button
             if (e.target.hasAttribute('data-delete-preset')) return;
-
-            const presetName = this.dataset.preset;
-            const presets = getFilterPresets();
-            if (presets[presetName]) {
-                applyPresetFilters(presets[presetName]);
-            }
+            const p = getFilterPresets()[this.dataset.preset];
+            if (p) applyPresetFilters(p);
         });
     });
-
-    // Add click handlers for delete buttons
     container.querySelectorAll('[data-delete-preset]').forEach(btn => {
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
-            const presetName = this.dataset.deletePreset;
-            if (confirm(`Delete preset "${presetName}"?`)) {
-                const presets = getFilterPresets();
-                delete presets[presetName];
-                saveFilterPresets(presets);
-                renderFilterPresets();
+            if (confirm(`Delete preset "${this.dataset.deletePreset}"?`)) {
+                const p = getFilterPresets(); delete p[this.dataset.deletePreset]; saveFilterPresets(p); renderFilterPresets();
             }
         });
     });
 }
-
-// Save preset button
 document.getElementById('savePresetBtn')?.addEventListener('click', function() {
     const filters = getCurrentFilters();
-
-    // Check if any filter is set
-    const hasFilters = Object.values(filters).some(v => v);
-    if (!hasFilters) {
-        alert('Set some filters first before saving a preset.');
-        return;
-    }
-
+    if (!Object.values(filters).some(v => v)) { alert('Set some filters first.'); return; }
     const name = prompt('Enter a name for this filter preset:');
     if (!name || !name.trim()) return;
-
-    const presets = getFilterPresets();
-    presets[name.trim()] = filters;
-    saveFilterPresets(presets);
-    renderFilterPresets();
+    const p = getFilterPresets(); p[name.trim()] = filters; saveFilterPresets(p); renderFilterPresets();
 });
-
-// Initialize presets on page load
 renderFilterPresets();
 
-// Refresh button - forces a fresh search
-document.getElementById('refreshBtn')?.addEventListener('click', function() {
-    const form = document.getElementById('searchForm');
-    // Add hidden input for refresh flag
-    let refreshInput = form.querySelector('input[name="refresh"]');
-    if (!refreshInput) {
-        refreshInput = document.createElement('input');
-        refreshInput.type = 'hidden';
-        refreshInput.name = 'refresh';
-        form.appendChild(refreshInput);
-    }
-    refreshInput.value = '1';
-    form.submit();
-});
+// ============ SSE Streaming Search ============
+let searchEventSource = null;
+let searchTimer = null;
 
-// Search form loading state with timer
-document.getElementById('searchForm')?.addEventListener('submit', function() {
+function startSearch(forceRefresh) {
+    const keywords = document.getElementById('keywordsInput').value.trim();
+    if (!keywords) { alert('Please enter search keywords'); return; }
+
+    const location = document.getElementById('locationInput').value.trim();
+    const boards = document.getElementById('boardsInput').value.trim();
+    const refresh = forceRefresh ? '1' : '0';
+
+    // Build SSE URL
+    const params = new URLSearchParams({ keywords, location, boards, refresh });
+    const url = '/search/stream?' + params.toString();
+
+    // Close previous connection
+    if (searchEventSource) { searchEventSource.close(); searchEventSource = null; }
+    if (searchTimer) { clearInterval(searchTimer); searchTimer = null; }
+
+    // Update UI
+    document.getElementById('landingPage').style.display = 'none';
+    document.getElementById('filterBar').style.display = '';
+    document.getElementById('resultsContainer').innerHTML = '';
+    document.getElementById('totalJobCount').textContent = '0';
+    document.getElementById('boardProgress').textContent = '';
+    document.getElementById('cacheBadge').style.display = 'none';
+
+    // Update filter storage key
+    updateFilterStorageKey();
+    restoreFilters();
+
+    // Show loading on button
     const btn = document.getElementById('searchBtn');
     const btnText = btn.querySelector('.btn-text');
     const btnStatus = btn.querySelector('.btn-status');
     const spinner = btn.querySelector('.spinner-border');
-
-    // Show loading state with timer
     btn.disabled = true;
     btn.classList.add('loading');
-    document.body.classList.add('loading');
     btnText.style.display = 'none';
     btnStatus.style.display = 'inline';
     spinner.style.display = 'inline-block';
 
-    let startTime = Date.now();
-    function updateTimer() {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        btnStatus.textContent = elapsed + 's';
-    }
-    updateTimer();
-    setInterval(updateTimer, 1000);
-});
+    const startTime = Date.now();
+    searchTimer = setInterval(() => {
+        btnStatus.textContent = Math.floor((Date.now() - startTime) / 1000) + 's';
+    }, 1000);
+    btnStatus.textContent = '0s';
 
-// Clear search history button
-document.getElementById('clearSearchHistoryBtn')?.addEventListener('click', async function() {
-    if (!confirm('Clear all recent searches and cached data?')) return;
+    // Open SSE connection
+    searchEventSource = new EventSource(url);
 
-    this.disabled = true;
-    this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    searchEventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
 
-    try {
-        const response = await fetch('/search/clear-history', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
-        });
-
-        // Check if response is OK before parsing JSON
-        if (!response.ok) {
-            throw new Error(`Server error: ${response.status}`);
+        if (data.type === 'start') {
+            document.getElementById('boardProgress').textContent = `(0/${data.total_boards} boards)`;
         }
-
-        const data = await response.json();
-
-        if (data.success) {
-            // Remove the recent searches card
-            this.closest('.card').remove();
-            // Also clear localStorage filter cache
-            for (let i = localStorage.length - 1; i >= 0; i--) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith('jass_filters_')) {
-                    localStorage.removeItem(key);
-                }
+        else if (data.type === 'board_done') {
+            document.getElementById('boardProgress').textContent = `(${data.completed}/${data.total_boards} boards)`;
+            if (data.jobs && data.jobs.length > 0) {
+                addJobsToContainer(data.jobs);
             }
-        } else {
-            alert('Failed to clear search history: ' + (data.error || 'Unknown error'));
-            this.disabled = false;
-            this.innerHTML = '<i class="bi bi-trash"></i> Clear';
         }
-    } catch (err) {
-        alert('Error: ' + err.message);
-        this.disabled = false;
-        this.innerHTML = '<i class="bi bi-trash"></i> Clear';
-    }
+        else if (data.type === 'board_error') {
+            document.getElementById('boardProgress').textContent = `(${data.completed}/${data.total_boards} boards)`;
+            console.warn(`Board ${data.board} failed: ${data.error}`);
+        }
+        else if (data.type === 'cached') {
+            document.getElementById('cacheBadge').style.display = '';
+            if (data.jobs && data.jobs.length > 0) {
+                addJobsToContainer(data.jobs);
+            }
+        }
+        else if (data.type === 'done') {
+            searchEventSource.close();
+            searchEventSource = null;
+            clearInterval(searchTimer);
+            searchTimer = null;
+
+            // Reset button
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btnText.style.display = '';
+            btnStatus.style.display = 'none';
+            spinner.style.display = '';
+
+            let progressText = data.from_cache ? '(cached)' : '';
+            if (data.failed_boards && data.failed_boards.length > 0) {
+                progressText += ` (${data.failed_boards.length} board(s) failed)`;
+            }
+            document.getElementById('boardProgress').textContent = progressText;
+            document.getElementById('totalJobCount').textContent = document.querySelectorAll('.job-card').length;
+
+            // Show "no results" if empty
+            if (document.querySelectorAll('.job-card').length === 0) {
+                document.getElementById('resultsContainer').innerHTML = `
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-emoji-frown" style="font-size: 3rem;"></i>
+                        <p class="mt-3">No jobs found matching your keywords</p>
+                    </div>`;
+            }
+        }
+        else if (data.type === 'error') {
+            alert(data.message);
+            searchEventSource.close();
+            searchEventSource = null;
+            clearInterval(searchTimer);
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btnText.style.display = '';
+            btnStatus.style.display = 'none';
+            spinner.style.display = '';
+        }
+    };
+
+    searchEventSource.onerror = function() {
+        searchEventSource.close();
+        searchEventSource = null;
+        clearInterval(searchTimer);
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        btnText.style.display = '';
+        btnStatus.style.display = 'none';
+        spinner.style.display = '';
+        document.getElementById('boardProgress').textContent = '';
+    };
+}
+
+// Search form submit - use SSE instead of regular POST
+document.getElementById('searchForm')?.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const refresh = document.getElementById('refreshInput').value === '1';
+    document.getElementById('refreshInput').value = '0';
+    startSearch(refresh);
 });
 
-// Clickable search history - fill form and submit
-let searchHistoryClicked = false;
+// Refresh button
+document.getElementById('refreshBtn')?.addEventListener('click', function() {
+    startSearch(true);
+});
+
+// Search history links
 document.querySelectorAll('.search-history-link').forEach(link => {
     link.addEventListener('click', function(e) {
         e.preventDefault();
-
-        // Prevent multiple clicks
-        if (searchHistoryClicked) return;
-        searchHistoryClicked = true;
-
-        // Show loading state on clicked link
-        const originalText = this.innerHTML;
-        this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Searching...';
-        this.style.pointerEvents = 'none';
-
-        // Also show loading on search button
-        const btn = document.getElementById('searchBtn');
-        setLoading(btn, true);
-
-        const form = document.getElementById('searchForm');
-        form.querySelector('[name="keywords"]').value = this.dataset.keywords;
-        form.querySelector('[name="location"]').value = this.dataset.location;
-        // Parse boards from JSON if present
+        document.getElementById('keywordsInput').value = this.dataset.keywords;
+        document.getElementById('locationInput').value = this.dataset.location;
         let boards = '';
         if (this.dataset.boards) {
-            try {
-                const boardsArr = JSON.parse(this.dataset.boards);
-                boards = boardsArr.join(', ');
-            } catch(e) {
-                boards = this.dataset.boards;
-            }
+            try { boards = JSON.parse(this.dataset.boards).join(', '); }
+            catch { boards = this.dataset.boards; }
         }
         document.getElementById('boardsInput').value = boards;
-        form.submit();
+        startSearch(false);
     });
 });
 
-// Double-click on job card to save and navigate to application
-document.querySelectorAll('.job-card').forEach(card => {
-    card.addEventListener('dblclick', async function(e) {
-        // Don't trigger if clicking on buttons or links
-        if (e.target.closest('button') || e.target.closest('a')) return;
-
-        const isSaved = this.classList.contains('saved');
-
-        if (isSaved) {
-            // Already saved - navigate to the saved job
-            const savedLink = this.querySelector('a.btn-success');
-            if (savedLink) {
-                window.location.href = savedLink.href;
+// Clear search history
+document.getElementById('clearSearchHistoryBtn')?.addEventListener('click', async function() {
+    if (!confirm('Clear all recent searches and cached data?')) return;
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+        const response = await fetch('/search/clear-history', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        const data = await response.json();
+        if (data.success) {
+            this.closest('.card').remove();
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('jass_filters_')) localStorage.removeItem(key);
             }
         } else {
-            // Save the job first, then navigate
-            const saveBtn = this.querySelector('.save-job-btn');
-            if (saveBtn && !saveBtn.disabled) {
-                const jobData = JSON.parse(saveBtn.dataset.job);
-                saveBtn.disabled = true;
-                saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-                try {
-                    const response = await fetch('/search/save', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify(jobData)
-                    });
-                    const data = await response.json();
-
-                    if (data.success) {
-                        // Navigate to the job detail page
-                        window.location.href = `/jobs/${data.job_id}`;
-                    } else {
-                        saveBtn.disabled = false;
-                        saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
-                        alert('Error saving job');
-                    }
-                } catch (err) {
-                    saveBtn.disabled = false;
-                    saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
-                    alert('Error saving job: ' + err.message);
-                }
-            }
+            alert('Failed: ' + (data.error || 'Unknown error'));
+            this.disabled = false; this.innerHTML = '<i class="bi bi-trash"></i> Clear';
         }
-    });
-});
-
-// Click on job card row to save (if not already saved)
-// Ctrl+click toggles saved state (saves or unsaves)
-document.querySelectorAll('.job-card').forEach(card => {
-    card.addEventListener('click', async function(e) {
-        // Don't trigger if clicking on buttons or links
-        if (e.target.closest('button') || e.target.closest('a')) return;
-
-        const isSaved = this.classList.contains('saved');
-
-        // Ctrl+click: toggle saved state
-        if (e.ctrlKey || e.metaKey) {
-            if (isSaved) {
-                // Unsave the job
-                const greenhouseId = this.dataset.greenhouseId;
-                if (!greenhouseId) return;
-
-                try {
-                    const response = await fetch('/search/unsave', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({greenhouse_id: greenhouseId})
-                    });
-                    const data = await response.json();
-
-                    if (data.success) {
-                        // Update card state to unsaved
-                        this.classList.remove('saved');
-                        this.dataset.saved = 'new';
-
-                        // Replace the "Saved" link with a "Save" button
-                        const savedLink = this.querySelector('a.btn-success');
-                        if (savedLink) {
-                            const jobData = {
-                                greenhouse_id: greenhouseId,
-                                board_token: this.dataset.boardToken,
-                                title: this.querySelector('.job-title-hover')?.textContent || '',
-                                company: this.dataset.company,
-                                location: this.dataset.location,
-                                url: this.dataset.url,
-                                description: this.dataset.description,
-                                department: this.dataset.department || ''
-                            };
-                            const saveBtn = document.createElement('button');
-                            saveBtn.className = 'btn btn-sm btn-outline-primary save-job-btn';
-                            saveBtn.dataset.job = JSON.stringify(jobData);
-                            saveBtn.innerHTML = '<i class="bi bi-bookmark"></i> Save';
-                            saveBtn.addEventListener('click', saveJobHandler);
-                            savedLink.parentNode.replaceChild(saveBtn, savedLink);
-                        }
-                    } else {
-                        alert('Error: ' + (data.error || 'Failed to unsave job'));
-                    }
-                } catch (err) {
-                    alert('Error unsaving job: ' + err.message);
-                }
-            } else {
-                // Save the job (same as regular click)
-                const saveBtn = this.querySelector('.save-job-btn');
-                if (saveBtn && !saveBtn.disabled) {
-                    saveBtn.click();
-                }
-            }
-        } else {
-            // Regular click: only save if not already saved
-            const saveBtn = this.querySelector('.save-job-btn');
-            if (saveBtn && !saveBtn.disabled) {
-                saveBtn.click();
-            }
-        }
-    });
-});
-
-// Job description hover preview
-const tooltip = document.getElementById('jobPreviewTooltip');
-let hoverTimeout;
-let isOverTooltip = false;
-
-document.querySelectorAll('.job-title-hover').forEach(title => {
-    title.addEventListener('mouseenter', function(e) {
-        const card = this.closest('.job-card');
-        const description = card?.dataset.description;
-        if (!description) return;
-
-        hoverTimeout = setTimeout(() => {
-            tooltip.innerHTML = description;
-            tooltip.scrollTop = 0;  // Reset scroll position for new content
-            tooltip.classList.add('visible');
-
-            // Position tooltip near the title
-            const rect = this.getBoundingClientRect();
-            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-
-            let top = rect.bottom + scrollTop + 5;
-            let left = rect.left + scrollLeft;
-
-            // Keep tooltip within viewport
-            if (left + 400 > window.innerWidth) {
-                left = window.innerWidth - 420 + scrollLeft;
-            }
-            if (top + 300 > window.innerHeight + scrollTop) {
-                top = rect.top + scrollTop - 310;
-            }
-
-            tooltip.style.top = top + 'px';
-            tooltip.style.left = left + 'px';
-        }, 300);
-    });
-
-    title.addEventListener('mouseleave', function() {
-        clearTimeout(hoverTimeout);
-        // Delay hiding to allow moving to tooltip
-        setTimeout(() => {
-            if (!isOverTooltip) {
-                tooltip.classList.remove('visible');
-                tooltip.scrollTop = 0;
-            }
-        }, 100);
-    });
-});
-
-// Keep tooltip visible when hovering over it
-tooltip?.addEventListener('mouseenter', function() {
-    isOverTooltip = true;
-});
-
-tooltip?.addEventListener('mouseleave', function() {
-    isOverTooltip = false;
-    tooltip.classList.remove('visible');
-    tooltip.scrollTop = 0;
-});
-
-// Hide tooltip when scrolling
-document.getElementById('resultsContainer')?.addEventListener('scroll', function() {
-    clearTimeout(hoverTimeout);
-    isOverTooltip = false;
-    tooltip.classList.remove('visible');
-    tooltip.scrollTop = 0;
+    } catch (err) {
+        alert('Error: ' + err.message);
+        this.disabled = false; this.innerHTML = '<i class="bi bi-trash"></i> Clear';
+    }
 });
 </script>
 {% endblock %}

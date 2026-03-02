@@ -144,7 +144,11 @@ Return ONLY the tailored resume in Markdown format, no explanations."""
             messages=[{"role": "user", "content": prompt}]
         )
 
-        return response.content[0].text
+        result = response.content[0].text.strip()
+        if not result or len(result) < 200:
+            log.error(f"Claude API returned insufficient resume content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid resume ({len(result)} chars)")
+        return result
 
     def generate_cover_letter(self, resume: str, job_description: str,
                                company: str, job_title: str,
@@ -257,7 +261,11 @@ Return ONLY the tailored resume in Markdown format, no explanations."""
         )
 
         log.info(f"Response: {response.usage}")
-        return response.choices[0].message.content
+        result = (response.choices[0].message.content or '').strip()
+        if not result or len(result) < 200:
+            log.error(f"OpenAI returned insufficient resume content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid resume ({len(result)} chars)")
+        return result
 
     def generate_cover_letter(self, resume: str, job_description: str,
                                company: str, job_title: str,
@@ -299,7 +307,11 @@ Return ONLY the cover letter in Markdown format, no explanations."""
         )
 
         log.info(f"Response: {response.usage}")
-        return _clean_cover_letter(response.choices[0].message.content)
+        result = (response.choices[0].message.content or '').strip()
+        if not result or len(result) < 100:
+            log.error(f"OpenAI returned insufficient cover letter content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid cover letter ({len(result)} chars)")
+        return _clean_cover_letter(result)
 
     def chat(self, messages: list, context: str = None) -> str:
         """Send a chat message and get a response."""
@@ -404,7 +416,11 @@ JOB DESCRIPTION:
 
 Return ONLY the tailored resume in Markdown format, no explanations."""
 
-        return self._generate(prompt, max_tokens=8192)
+        result = self._generate(prompt, max_tokens=8192).strip()
+        if not result or len(result) < 200:
+            log.error(f"Ollama returned insufficient resume content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid resume ({len(result)} chars)")
+        return result
 
     def generate_cover_letter(self, resume: str, job_description: str,
                                company: str, job_title: str,
@@ -429,7 +445,11 @@ POSITION: {job_title}
 
 Return ONLY the cover letter in Markdown format, no explanations."""
 
-        return _clean_cover_letter(self._generate(prompt, max_tokens=2048))
+        result = self._generate(prompt, max_tokens=2048).strip()
+        if not result or len(result) < 100:
+            log.error(f"Ollama returned insufficient cover letter content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid cover letter ({len(result)} chars)")
+        return _clean_cover_letter(result)
 
     def chat(self, messages: list, context: str = None) -> str:
         """Send a chat message and get a response."""

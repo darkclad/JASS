@@ -56,41 +56,19 @@
                             <optgroup label="Ollama Models" class="ollama-models" id="ollamaModelsGroup">
                                 <option value="" disabled>Loading models...</option>
                             </optgroup>
-                            <!-- Claude CLI models -->
-                            <optgroup label="Claude CLI" class="claude-cli-models">
-                                <option value="claude-sonnet-4-20250514" {% if active_config and active_config.model_name == 'claude-sonnet-4-20250514' %}selected{% endif %}>
-                                    Claude Sonnet 4 (Recommended)
-                                </option>
-                                <option value="claude-3-5-sonnet-20241022" {% if active_config and active_config.model_name == 'claude-3-5-sonnet-20241022' %}selected{% endif %}>
-                                    Claude 3.5 Sonnet
-                                </option>
-                                <option value="claude-3-haiku-20240307" {% if active_config and active_config.model_name == 'claude-3-haiku-20240307' %}selected{% endif %}>
-                                    Claude 3 Haiku (Faster/Cheaper)
-                                </option>
+                            <!-- Claude CLI models (dynamically loaded) -->
+                            <optgroup label="Claude CLI" class="claude-cli-models" id="claudeCliModelsGroup">
+                                <option value="" disabled>Loading models...</option>
                             </optgroup>
-                            <!-- Claude API models -->
-                            <optgroup label="Claude API" class="claude-models">
-                                <option value="claude-sonnet-4-20250514" {% if active_config and active_config.model_name == 'claude-sonnet-4-20250514' %}selected{% endif %}>
-                                    Claude Sonnet 4 (Recommended)
-                                </option>
-                                <option value="claude-3-5-sonnet-20241022" {% if active_config and active_config.model_name == 'claude-3-5-sonnet-20241022' %}selected{% endif %}>
-                                    Claude 3.5 Sonnet
-                                </option>
-                                <option value="claude-3-haiku-20240307" {% if active_config and active_config.model_name == 'claude-3-haiku-20240307' %}selected{% endif %}>
-                                    Claude 3 Haiku (Faster/Cheaper)
-                                </option>
+                            <!-- Claude API models (dynamically loaded) -->
+                            <optgroup label="Claude API" class="claude-models" id="claudeApiModelsGroup">
+                                <option value="" disabled>Loading models...</option>
                             </optgroup>
                             <!-- OpenAI models -->
                             <optgroup label="OpenAI" class="openai-models">
-                                <option value="gpt-4" {% if active_config and active_config.model_name == 'gpt-4' %}selected{% endif %}>
-                                    GPT-4
-                                </option>
-                                <option value="gpt-4-turbo" {% if active_config and active_config.model_name == 'gpt-4-turbo' %}selected{% endif %}>
-                                    GPT-4 Turbo
-                                </option>
-                                <option value="gpt-3.5-turbo" {% if active_config and active_config.model_name == 'gpt-3.5-turbo' %}selected{% endif %}>
-                                    GPT-3.5 Turbo (Cheaper)
-                                </option>
+                                <option value="gpt-4">GPT-4</option>
+                                <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                                <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Cheaper)</option>
                             </optgroup>
                         </select>
                         <div class="form-text" id="modelHelp"></div>
@@ -254,43 +232,139 @@
 
 {% block extra_js %}
 <script>
-// Store the current model for Ollama
-const currentOllamaModel = '{{ active_config.model_name if active_config and active_config.provider == "ollama" else "" }}';
+// Saved model/provider from the database
+const currentModel = '{{ active_config.model_name if active_config else "" }}';
+const currentProvider = '{{ active_config.provider if active_config else "" }}';
+
+// Model cache - persists across page reloads via sessionStorage
+const modelCache = {
+    get(key) {
+        try {
+            const raw = sessionStorage.getItem('modelCache_' + key);
+            return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+    },
+    set(key, data) {
+        try { sessionStorage.setItem('modelCache_' + key, JSON.stringify(data)); }
+        catch { /* storage full or unavailable */ }
+    },
+    clear(key) {
+        sessionStorage.removeItem('modelCache_' + key);
+    }
+};
+
+// Populate an optgroup with models and select the right one
+function populateGroup(group, models, valueKey, labelFn, targetModel) {
+    group.innerHTML = '';
+    let matched = false;
+    models.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model[valueKey];
+        option.textContent = labelFn(model);
+        if (model[valueKey] === targetModel) {
+            option.selected = true;
+            matched = true;
+        }
+        group.appendChild(option);
+    });
+    if (!matched && models.length > 0) {
+        group.querySelector('option').selected = true;
+    }
+}
+
+// Force the <select> to reflect the correct visible selection
+function forceSelectVisible() {
+    const sel = document.getElementById('modelSelect');
+    const current = sel.options[sel.selectedIndex];
+    // If nothing selected or current is disabled/hidden, pick first enabled option
+    if (!current || current.disabled || current.closest('optgroup')?.style.display === 'none') {
+        for (const opt of sel.options) {
+            if (!opt.disabled && opt.closest('optgroup')?.style.display !== 'none') {
+                opt.selected = true;
+                break;
+            }
+        }
+    }
+}
 
 // Load Ollama models from the server
 async function loadOllamaModels() {
-    const ollamaGroup = document.getElementById('ollamaModelsGroup');
+    const group = document.getElementById('ollamaModelsGroup');
     const baseUrl = document.getElementById('ollamaUrlInput').value || 'http://localhost:11434';
     const modelHelp = document.getElementById('modelHelp');
 
-    ollamaGroup.innerHTML = '<option value="" disabled>Loading models...</option>';
+    // Use cache if available
+    const cached = modelCache.get('ollama');
+    if (cached) {
+        populateGroup(group, cached, 'name',
+            m => m.size ? `${m.name} (${m.size})` : m.name, currentModel);
+        modelHelp.textContent = `${cached.length} model(s) available`;
+        modelHelp.className = 'form-text text-success';
+        return;
+    }
+
+    group.innerHTML = '<option value="" disabled selected>Loading models...</option>';
+    forceSelectVisible();
 
     try {
         const response = await fetch(`/settings/ollama-models?base_url=${encodeURIComponent(baseUrl)}`);
         const data = await response.json();
 
         if (data.available && data.models.length > 0) {
-            ollamaGroup.innerHTML = '';
-            data.models.forEach((model, index) => {
-                const option = document.createElement('option');
-                option.value = model.name;
-                option.textContent = model.size ? `${model.name} (${model.size})` : model.name;
-                // Select the current model or first one
-                if (model.name === currentOllamaModel || (index === 0 && !currentOllamaModel)) {
-                    option.selected = true;
-                }
-                ollamaGroup.appendChild(option);
-            });
+            modelCache.set('ollama', data.models);
+            populateGroup(group, data.models, 'name',
+                m => m.size ? `${m.name} (${m.size})` : m.name, currentModel);
             modelHelp.textContent = `${data.models.length} model(s) available`;
             modelHelp.className = 'form-text text-success';
         } else {
-            ollamaGroup.innerHTML = '<option value="" disabled>No models found</option>';
+            group.innerHTML = '<option value="" disabled>No models found</option>';
             modelHelp.textContent = 'No models found. Run "ollama pull llama3.2" to download a model.';
             modelHelp.className = 'form-text text-warning';
         }
     } catch (err) {
-        ollamaGroup.innerHTML = '<option value="" disabled>Error loading models</option>';
+        group.innerHTML = '<option value="" disabled>Error loading models</option>';
         modelHelp.textContent = 'Cannot connect to Ollama. Is it running?';
+        modelHelp.className = 'form-text text-danger';
+    }
+}
+
+// Load Claude models (shared between Claude CLI and Claude API)
+async function loadClaudeModels(targetGroupId) {
+    const group = document.getElementById(targetGroupId);
+    const modelHelp = document.getElementById('modelHelp');
+
+    // Use cache if available
+    const cached = modelCache.get('claude');
+    if (cached) {
+        populateGroup(group, cached, 'id', m => m.name, currentModel);
+        modelHelp.textContent = `${cached.length} model(s) available`;
+        modelHelp.className = 'form-text text-success';
+        return;
+    }
+
+    group.innerHTML = '<option value="" disabled selected>Loading models...</option>';
+    forceSelectVisible();
+    modelHelp.textContent = 'Fetching available models...';
+    modelHelp.className = 'form-text text-muted';
+
+    try {
+        const response = await fetch('/settings/claude-models');
+        const data = await response.json();
+
+        if (data.available && data.models.length > 0) {
+            modelCache.set('claude', data.models);
+            populateGroup(group, data.models, 'id', m => m.name, currentModel);
+            const sourceLabel = data.source === 'api' ? 'from API' : data.source === 'cli' ? 'from CLI' : '';
+            modelHelp.textContent = `${data.models.length} model(s) available ${sourceLabel}`;
+            modelHelp.className = 'form-text text-success';
+        } else {
+            group.innerHTML = '<option value="" disabled>No models found</option>';
+            modelHelp.textContent = 'Could not fetch models.';
+            modelHelp.className = 'form-text text-warning';
+        }
+    } catch (err) {
+        group.innerHTML = '<option value="" disabled>Error loading models</option>';
+        modelHelp.textContent = 'Error fetching Claude models: ' + err.message;
         modelHelp.className = 'form-text text-danger';
     }
 }
@@ -303,8 +377,31 @@ function updateProviderUI() {
     const providerHelp = document.getElementById('providerHelp');
     const modelHelp = document.getElementById('modelHelp');
 
-    // Show/hide API key field and Ollama URL field
-    if (provider === 'ollama') {
+    // Show/hide model optgroups FIRST - disable hidden ones so they can't be submitted
+    document.querySelectorAll('#modelSelect optgroup').forEach(g => {
+        const visible = g.classList.contains(provider + '-models');
+        g.style.display = visible ? '' : 'none';
+        g.querySelectorAll('option').forEach(opt => {
+            opt.disabled = !visible;
+            // Deselect options in hidden groups
+            if (!visible) opt.selected = false;
+        });
+    });
+
+    // For static groups (OpenAI), select the saved model or first option immediately
+    if (provider === 'openai') {
+        apiKeyGroup.style.display = 'block';
+        ollamaUrlGroup.style.display = 'none';
+        providerHelp.textContent = '';
+        modelHelp.textContent = '';
+        modelHelp.className = 'form-text';
+        const group = document.querySelector('#modelSelect optgroup.openai-models');
+        let matched = false;
+        group.querySelectorAll('option').forEach(opt => {
+            if (opt.value === currentModel) { opt.selected = true; matched = true; }
+        });
+        if (!matched) group.querySelector('option').selected = true;
+    } else if (provider === 'ollama') {
         apiKeyGroup.style.display = 'none';
         ollamaUrlGroup.style.display = 'block';
         providerHelp.textContent = 'Uses locally running Ollama server. No API key needed.';
@@ -313,29 +410,16 @@ function updateProviderUI() {
         apiKeyGroup.style.display = 'none';
         ollamaUrlGroup.style.display = 'none';
         providerHelp.textContent = 'Uses locally installed Claude CLI. No API key needed.';
-        modelHelp.textContent = '';
-        modelHelp.className = 'form-text';
-    } else {
+        loadClaudeModels('claudeCliModelsGroup');
+    } else if (provider === 'claude') {
         apiKeyGroup.style.display = 'block';
         ollamaUrlGroup.style.display = 'none';
         providerHelp.textContent = '';
-        modelHelp.textContent = '';
-        modelHelp.className = 'form-text';
+        loadClaudeModels('claudeApiModelsGroup');
     }
 
-    // Show/hide model options
-    document.querySelectorAll('#modelSelect optgroup').forEach(g => {
-        g.style.display = g.classList.contains(provider + '-models') ? '' : 'none';
-    });
-
-    // Select first option of visible group (except for ollama which is handled by loadOllamaModels)
-    if (provider !== 'ollama') {
-        const visibleGroup = document.querySelector(`#modelSelect optgroup.${provider}-models`);
-        if (visibleGroup) {
-            const firstOption = visibleGroup.querySelector('option');
-            if (firstOption) firstOption.selected = true;
-        }
-    }
+    // Ensure select shows a valid option (not a hidden/disabled one)
+    forceSelectVisible();
 }
 
 // Initialize on page load
@@ -344,18 +428,26 @@ updateProviderUI();
 // Update on provider change
 document.getElementById('providerSelect')?.addEventListener('change', updateProviderUI);
 
-// Reload models when Ollama URL changes
+// Reload models when Ollama URL changes (clear cache to force re-fetch)
 document.getElementById('ollamaUrlInput')?.addEventListener('change', function() {
     if (document.getElementById('providerSelect').value === 'ollama') {
+        modelCache.clear('ollama');
         loadOllamaModels();
     }
 });
 
-// Handle form submission - copy Ollama URL to api_key field
+// Handle form submission - copy Ollama URL to api_key field and validate model
 document.querySelector('form[action*="save_settings"]')?.addEventListener('submit', function(e) {
     const provider = document.getElementById('providerSelect').value;
     if (provider === 'ollama') {
         document.getElementById('apiKeyInput').value = document.getElementById('ollamaUrlInput').value;
+    }
+    // Ensure a valid model is selected
+    const sel = document.getElementById('modelSelect');
+    const selected = sel.options[sel.selectedIndex];
+    if (!selected || selected.disabled || !selected.value) {
+        e.preventDefault();
+        alert('Please wait for models to load and select a model before saving.');
     }
 });
 

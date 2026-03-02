@@ -244,6 +244,7 @@ async function checkDuplicates() {
                     <div class="duplicate-item ${dup.status === 'applied' ? 'applied' : ''}">
                         <a href="${link}" target="_blank"><strong>${dup.title}</strong></a> at ${dup.company}
                         ${statusBadge}
+                        <span class="badge bg-warning text-dark">${dup.match_score}%</span>
                         <small class="text-muted d-block">${dup.match_reason} (saved ${dup.created_at})</small>
                     </div>
                 `;
