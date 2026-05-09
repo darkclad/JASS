@@ -74,7 +74,14 @@ Generated application documents for a job.
 | job_id | Integer | Foreign key to Job |
 | resume_md/pdf | String | Resume file paths |
 | cover_letter_md/pdf | String | Cover letter paths |
+| motivation_speech | Text | Generated "Why I want to join" speech (no file) |
 | ai_provider | String | Provider used |
+| ai_model | String | Model used |
+| tailored_at | DateTime | Last generation timestamp |
+| resume_ai_time | Float | Seconds spent in AI generating the resume |
+| resume_pdf_time | Float | Seconds spent rendering the resume PDF |
+| cover_letter_ai_time | Float | Seconds spent in AI generating the cover letter |
+| cover_letter_pdf_time | Float | Seconds spent rendering the cover letter PDF |
 | status | String | draft/ready/applied |
 
 ### SearchHistory
@@ -104,6 +111,7 @@ Key-value settings storage.
 | greenhouse_boards | Custom board list |
 | resume_prompt | Custom resume prompt |
 | cover_letter_prompt | Custom cover letter prompt |
+| motivation_speech_prompt | Custom motivation speech prompt |
 
 ## Key Components
 
@@ -123,6 +131,7 @@ Abstract interface for AI providers:
 class AIProvider(ABC):
     def generate_tailored_resume(master, job_desc) -> str
     def generate_cover_letter(resume, job_desc, company, title) -> str
+    def generate_motivation_speech(resume, job_desc, company, title) -> str
 ```
 
 Shared utilities:
@@ -133,6 +142,10 @@ Implementations:
 - `OpenAIProvider`: OpenAI API
 - `OllamaProvider`: Local LLM via Ollama
 - `ClaudeCLIProvider` (in `claude_cli.py`): Claude Code CLI tool
+
+On Windows, `ClaudeCLIProvider` bypasses the `claude.cmd` batch wrapper by invoking
+`node` directly against the underlying `cli.js`. The wrapper does not forward stdin
+to the Node process when called from `subprocess`, which would cause empty prompts.
 
 ### Document Generator (`document_gen.py`)
 
@@ -216,8 +229,14 @@ Stored in `localStorage['jass_filter_presets']`:
 Shared utility for buttons that trigger Server-Sent Events operations:
 
 ```javascript
-setupSSEButton(btnId, allBtnIds, confirmMsg)
+setupSSEButton(btnId, disableOnStartIds, confirmMsg)
 ```
+
+`disableOnStartIds` is the list of *other* buttons this one should disable while running.
+Disabling is reference-counted: a button stays disabled until every owner releases it,
+so independent operations (resume + cover letter, speech) can run in parallel without
+fighting over the same button state. Per-source SSE events (`{source: 'resume', ...}`)
+drive a multi-row status panel with individual timers.
 
 Expected button HTML structure:
 ```html
@@ -257,9 +276,10 @@ Hover-triggered tooltip:
 - `GET /jobs/{id}` - Job detail
 - `POST /jobs/{id}/delete` - Delete job
 - `POST /jobs/{id}/tailor` - Generate documents (non-streaming)
-- `GET /jobs/{id}/tailor-stream` - Generate documents (SSE)
+- `GET /jobs/{id}/tailor-stream` - Generate resume + cover letter in parallel (SSE, per-source events)
 - `GET /jobs/{id}/tailor-resume-stream` - Generate resume only
-- `GET /jobs/{id}/tailor-cover-letter-stream` - Generate cover letter only
+- `GET /jobs/{id}/tailor-cover-letter-stream` - Generate cover letter only (falls back to master resume if no tailored resume exists)
+- `GET /jobs/{id}/generate-speech-stream` - Generate motivation speech (SSE)
 
 ### Applications
 - `GET /applications` - List applications

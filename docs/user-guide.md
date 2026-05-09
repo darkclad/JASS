@@ -43,6 +43,7 @@ C++, Python, Linux, Docker, Kubernetes
    - **Claude CLI**: Recommended, no API key needed
    - **Claude API**: Requires Anthropic API key
    - **OpenAI**: Requires OpenAI API key
+   - **Ollama**: Local LLMs via Ollama (set the base URL in the API key field, e.g. `http://localhost:11434`)
 3. Enter API key if required
 4. Click **Save Settings**
 5. Click **Test Connection** to verify
@@ -114,9 +115,19 @@ Click on a job to view details and generate application documents.
 
 ### Generate Cover Letter Only
 
-1. Open a job with an existing resume
+1. Open a job (a tailored resume is preferred but not required)
 2. Click **Generate Cover Letter**
-3. Uses the existing tailored resume
+3. Uses the tailored resume if available; otherwise falls back to your default master resume
+
+### Generate Motivation Speech
+
+A short, spoken-style "Why I want to join" pitch for interview prep — separate from the resume and cover letter.
+
+1. Open an application that has a generated resume
+2. Click **Generate Speech** in the sidebar
+3. The speech appears as a new **Speech** tab on the application page
+
+The default prompt is tuned to avoid corporate jargon and AI-tells. Customize it under Settings > AI Prompts > Motivation Speech Prompt.
 
 ### Regenerate Documents
 
@@ -124,6 +135,8 @@ To regenerate with fresh AI output:
 1. Click **Regenerate Resume** or **Regenerate Cover Letter**
 2. Confirm the action
 3. Wait for new documents
+
+Resume and cover letter regenerations can run in parallel — each shows its own status row and timer in the button. The motivation speech runs independently and won't block the others.
 
 ## Editing Documents
 
@@ -156,6 +169,13 @@ When you submit an application:
 ### View Application History
 
 Go to **Applications** to see all applications and their status.
+
+### Application Sidebar
+
+The application detail page shows:
+- **Job Info**: company, location, salary, employment type, skills, hiring manager, source
+- **Generation Times**: how long the AI and PDF steps took for resume and cover letter
+- **AI Provider / Model**: which provider produced the documents
 
 ## Adding Jobs Manually
 

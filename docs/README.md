@@ -27,11 +27,14 @@ JASS is a Flask-based web application that streamlines the job application proce
 ### AI-Powered Document Generation
 - **Resume Tailoring**: AI automatically tailors your master resume to match job descriptions
 - **Cover Letter Generation**: AI generates personalized cover letters for each application
+- **Motivation Speech**: AI generates a short, natural-sounding "Why I want to join" speech for interview prep
+- **Parallel Generation**: Resume and cover letter run in parallel with per-source progress and timers
 - **Multiple AI Providers**:
   - Claude API (Anthropic)
   - OpenAI API (GPT-4)
   - Claude CLI (local, no API key required)
-- **Custom Prompts**: Customize AI prompts for resume and cover letter generation
+  - Ollama (local LLMs)
+- **Custom Prompts**: Customize AI prompts for resume, cover letter, and motivation speech
 - **Hiring Manager Detection**: Automatically extracts hiring manager name from LinkedIn job posts
 
 ### Document Management
@@ -44,6 +47,8 @@ JASS is a Flask-based web application that streamlines the job application proce
 - **Status Tracking**: Track jobs through stages (saved, tailoring, ready, applied)
 - **Application History**: View all applications and their status
 - **Quick Apply**: Mark applications as applied with timestamp
+- **Generation Metrics**: Per-application AI/PDF generation timings displayed in the sidebar
+- **Job Info Sidebar**: Application page shows the original job's company, location, salary, skills, and source
 
 ## Quick Start
 
@@ -61,6 +66,8 @@ npm install
 # Run
 python app.py
 ```
+
+On Windows, `start.bat` handles the venv, dependencies, and Node check in one step.
 
 Open http://localhost:5000 in your browser.
 

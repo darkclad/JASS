@@ -8,6 +8,7 @@
   - Claude CLI (recommended - no API key needed)
   - Anthropic API key
   - OpenAI API key
+  - Ollama (local LLMs, no API key needed)
 
 ## Installation Steps
 
@@ -102,6 +103,16 @@ export OPENAI_API_KEY=sk-...
 
 Or configure in the Settings page after starting the app.
 
+#### Option D: Ollama
+
+Install Ollama from https://ollama.com/ and pull a model:
+
+```bash
+ollama pull llama3.2
+```
+
+Configure the base URL (default `http://localhost:11434`) and model name in the Settings page.
+
 ## Running the Application
 
 ### Development Mode
@@ -111,6 +122,16 @@ python app.py
 ```
 
 The application will start at http://localhost:5000
+
+### Windows One-Click Start
+
+On Windows, run `start.bat` from the project root. It will:
+
+- Create the venv (using the `py` launcher, falling back to `python`) if missing
+- Detect and rebuild a stale venv left over from a moved project directory
+- Install/update Python dependencies
+- Verify Node.js and `md-to-pdf` are installed
+- Launch the app using the venv's Python directly (no activation needed)
 
 ### Debug Logging
 

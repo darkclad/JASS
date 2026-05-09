@@ -50,6 +50,19 @@ Uses the OpenAI API for GPT models.
 - `gpt-4o`
 - `gpt-3.5-turbo`
 
+### Ollama (Local LLMs)
+
+Runs generation against a local Ollama server — no API key, no external calls.
+
+**Setup:**
+1. Install and start Ollama: https://ollama.com/
+2. Pull a model: `ollama pull llama3.2`
+3. Select "Ollama" as provider
+4. Enter the Ollama base URL in the API key field (default: `http://localhost:11434`)
+5. Choose the model name (e.g. `llama3.2`)
+
+Quality depends heavily on the local model. Larger instruct-tuned models give better resumes and cover letters.
+
 ## Greenhouse Boards
 
 Configure which company job boards to search.
@@ -107,6 +120,16 @@ INSTRUCTIONS:
 8. Ensure the resume is ATS-friendly
 ```
 
+### Motivation Speech Prompt
+
+Controls the "Why I want to join" speech generation. The default prompt is tuned to produce
+short, spoken-style text that avoids corporate jargon and obvious AI-tells.
+
+Tips for editing:
+- Keep instructions about *not* using buzzwords — they matter more than what to include.
+- Specify length and paragraph count so the speech doesn't drift into a cover letter.
+- Mention "first person, spoken aloud" to keep the tone conversational.
+
 ### Cover Letter Prompt
 
 Controls cover letter generation. Default:
@@ -130,7 +153,7 @@ INSTRUCTIONS:
 ### Custom Prompts
 
 1. Go to **Settings** > **AI Prompts**
-2. Edit the resume and/or cover letter prompts
+2. Edit the resume, cover letter, and/or motivation speech prompts
 3. Click **Save Prompts**
 
 Tips for custom prompts:
