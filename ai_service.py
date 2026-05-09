@@ -76,6 +76,12 @@ class AIProvider(ABC):
         """Generate a cover letter for the job."""
         pass
 
+    @abstractmethod
+    def generate_motivation_speech(self, resume: str, job_description: str,
+                                    company: str, job_title: str) -> str:
+        """Generate a short motivation speech for why the applicant wants to join."""
+        pass
+
     def chat(self, messages: list, context: str = None) -> str:
         """
         Send a chat message and get a response.
@@ -119,12 +125,28 @@ INSTRUCTIONS:
 9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
 10. Extract the applicant's name from the resume and use it in the signature"""
 
+    DEFAULT_MOTIVATION_SPEECH_PROMPT = """You are helping a job applicant prepare for an interview. Write a short, genuine speech explaining why they want to join this company and why this specific role interests them.
+
+INSTRUCTIONS:
+1. Research what the company does based on the job description
+2. Write in first person as if the applicant is speaking directly to the interviewer
+3. Use simple, natural, everyday language — speak like a real person talking to another person
+4. DO NOT use buzzwords, corporate jargon, or fancy vocabulary — no "synergy", "leverage", "passionate about innovation", "thrilled", "excited to contribute" etc.
+5. Connect the applicant's actual experience from their resume to what the role needs
+6. Show genuine curiosity about what the company does and the problems they solve
+7. Keep it conversational and authentic — something you would actually say out loud in an interview
+8. It MUST NOT sound like it was written by AI — no generic phrases, no perfect structure, keep it human and slightly imperfect
+9. 150-300 words maximum, 2-3 short paragraphs
+10. Do not start with "I am writing" or any letter-style opening — this is spoken text"""
+
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514",
-                 resume_prompt: str = None, cover_letter_prompt: str = None):
+                 resume_prompt: str = None, cover_letter_prompt: str = None,
+                 motivation_speech_prompt: str = None):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
         self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
+        self.motivation_speech_prompt = motivation_speech_prompt or self.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     def generate_tailored_resume(self, master_resume: str, job_description: str) -> str:
         """Generate a tailored resume."""
@@ -181,6 +203,34 @@ Return ONLY the cover letter in Markdown format, no explanations."""
 
         return _clean_cover_letter(response.content[0].text)
 
+    def generate_motivation_speech(self, resume: str, job_description: str,
+                                    company: str, job_title: str) -> str:
+        """Generate a motivation speech."""
+        prompt = f"""{self.motivation_speech_prompt}
+
+RESUME:
+{resume}
+
+JOB DESCRIPTION:
+{job_description}
+
+COMPANY: {company}
+POSITION: {job_title}
+
+Return ONLY the speech text, no explanations or preamble."""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        result = response.content[0].text.strip()
+        if not result or len(result) < 50:
+            log.error(f"Claude API returned insufficient speech content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid speech ({len(result)} chars)")
+        return result
+
     def chat(self, messages: list, context: str = None) -> str:
         """Send a chat message and get a response."""
         # Build system message if context provided
@@ -212,13 +262,16 @@ class OpenAIProvider(AIProvider):
 
     DEFAULT_RESUME_PROMPT = ClaudeProvider.DEFAULT_RESUME_PROMPT
     DEFAULT_COVER_LETTER_PROMPT = ClaudeProvider.DEFAULT_COVER_LETTER_PROMPT
+    DEFAULT_MOTIVATION_SPEECH_PROMPT = ClaudeProvider.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     def __init__(self, api_key: str, model: str = "gpt-4",
-                 resume_prompt: str = None, cover_letter_prompt: str = None):
+                 resume_prompt: str = None, cover_letter_prompt: str = None,
+                 motivation_speech_prompt: str = None):
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model
         self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
         self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
+        self.motivation_speech_prompt = motivation_speech_prompt or self.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     def _get_max_tokens(self, prompt_tokens: int) -> int:
         """Calculate safe max_tokens based on model limits."""
@@ -313,6 +366,34 @@ Return ONLY the cover letter in Markdown format, no explanations."""
             raise RuntimeError(f"AI returned empty or invalid cover letter ({len(result)} chars)")
         return _clean_cover_letter(result)
 
+    def generate_motivation_speech(self, resume: str, job_description: str,
+                                    company: str, job_title: str) -> str:
+        """Generate a motivation speech."""
+        prompt = f"""{self.motivation_speech_prompt}
+
+RESUME:
+{resume}
+
+JOB DESCRIPTION:
+{job_description}
+
+COMPANY: {company}
+POSITION: {job_title}
+
+Return ONLY the speech text, no explanations or preamble."""
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        result = (response.choices[0].message.content or '').strip()
+        if not result or len(result) < 50:
+            log.error(f"OpenAI returned insufficient speech content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid speech ({len(result)} chars)")
+        return result
+
     def chat(self, messages: list, context: str = None) -> str:
         """Send a chat message and get a response."""
         # Build system message if context provided
@@ -337,13 +418,16 @@ class OllamaProvider(AIProvider):
 
     DEFAULT_RESUME_PROMPT = ClaudeProvider.DEFAULT_RESUME_PROMPT
     DEFAULT_COVER_LETTER_PROMPT = ClaudeProvider.DEFAULT_COVER_LETTER_PROMPT
+    DEFAULT_MOTIVATION_SPEECH_PROMPT = ClaudeProvider.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2",
-                 resume_prompt: str = None, cover_letter_prompt: str = None):
+                 resume_prompt: str = None, cover_letter_prompt: str = None,
+                 motivation_speech_prompt: str = None):
         self.base_url = base_url.rstrip('/')
         self.model = model
         self.resume_prompt = resume_prompt or self.DEFAULT_RESUME_PROMPT
         self.cover_letter_prompt = cover_letter_prompt or self.DEFAULT_COVER_LETTER_PROMPT
+        self.motivation_speech_prompt = motivation_speech_prompt or self.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     @staticmethod
     def list_models(base_url: str = "http://localhost:11434") -> list:
@@ -451,6 +535,28 @@ Return ONLY the cover letter in Markdown format, no explanations."""
             raise RuntimeError(f"AI returned empty or invalid cover letter ({len(result)} chars)")
         return _clean_cover_letter(result)
 
+    def generate_motivation_speech(self, resume: str, job_description: str,
+                                    company: str, job_title: str) -> str:
+        """Generate a motivation speech."""
+        prompt = f"""{self.motivation_speech_prompt}
+
+RESUME:
+{resume}
+
+JOB DESCRIPTION:
+{job_description}
+
+COMPANY: {company}
+POSITION: {job_title}
+
+Return ONLY the speech text, no explanations or preamble."""
+
+        result = self._generate(prompt, max_tokens=1024).strip()
+        if not result or len(result) < 50:
+            log.error(f"Ollama returned insufficient speech content ({len(result)} chars)")
+            raise RuntimeError(f"AI returned empty or invalid speech ({len(result)} chars)")
+        return result
+
     def chat(self, messages: list, context: str = None) -> str:
         """Send a chat message and get a response."""
         # Build system message if context provided
@@ -476,7 +582,8 @@ Return ONLY the cover letter in Markdown format, no explanations."""
 
 def get_ai_provider(provider: str = None, api_key: str = None,
                     model: str = None, resume_prompt: str = None,
-                    cover_letter_prompt: str = None) -> AIProvider:
+                    cover_letter_prompt: str = None,
+                    motivation_speech_prompt: str = None) -> AIProvider:
     """
     Factory function to get an AI provider.
 
@@ -486,6 +593,7 @@ def get_ai_provider(provider: str = None, api_key: str = None,
         model: Model name
         resume_prompt: Custom prompt for resume generation
         cover_letter_prompt: Custom prompt for cover letter generation
+        motivation_speech_prompt: Custom prompt for motivation speech generation
 
     Returns:
         AIProvider instance (or ClaudeCLIProvider for claude-cli)
@@ -497,25 +605,25 @@ def get_ai_provider(provider: str = None, api_key: str = None,
         if not key:
             raise ValueError("ANTHROPIC_API_KEY not set")
         return ClaudeProvider(key, model or "claude-sonnet-4-20250514",
-                              resume_prompt, cover_letter_prompt)
+                              resume_prompt, cover_letter_prompt, motivation_speech_prompt)
 
     elif provider == 'openai':
         key = api_key or os.environ.get('OPENAI_API_KEY')
         if not key:
             raise ValueError("OPENAI_API_KEY not set")
         return OpenAIProvider(key, model or "gpt-4",
-                              resume_prompt, cover_letter_prompt)
+                              resume_prompt, cover_letter_prompt, motivation_speech_prompt)
 
     elif provider == 'claude-cli':
         from claude_cli import ClaudeCLIProvider
         return ClaudeCLIProvider(model or "claude-sonnet-4-20250514",
-                                 resume_prompt, cover_letter_prompt)
+                                 resume_prompt, cover_letter_prompt, motivation_speech_prompt)
 
     elif provider == 'ollama':
         # api_key is used to store the base URL for ollama (default: http://localhost:11434)
         base_url = api_key or "http://localhost:11434"
         return OllamaProvider(base_url, model or "llama3.2",
-                              resume_prompt, cover_letter_prompt)
+                              resume_prompt, cover_letter_prompt, motivation_speech_prompt)
 
     else:
         raise ValueError(f"Unknown provider: {provider}")

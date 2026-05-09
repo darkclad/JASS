@@ -101,7 +101,7 @@
         }
         .btn.loading {
             pointer-events: none;
-            opacity: 0.7;
+            opacity: 0.85;
         }
         .btn.loading .btn-text {
             visibility: hidden;
@@ -115,6 +115,56 @@
             height: 1rem;
             border-width: 2px;
         }
+        /* Expanded parallel generation status panel */
+        .btn.status-expanded {
+            height: auto !important;
+            min-height: 76px;
+            padding: 10px 14px !important;
+            display: flex !important;
+            flex-direction: column;
+            justify-content: center;
+            gap: 5px;
+            white-space: normal;
+            cursor: wait;
+            opacity: 1 !important;
+        }
+        .btn.status-expanded .btn-status {
+            display: block !important;
+            text-align: left;
+            width: 100%;
+        }
+        .status-gen-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.88rem;
+            line-height: 1.4;
+        }
+        .status-gen-label {
+            font-weight: 700;
+            min-width: 82px;
+            opacity: 0.9;
+        }
+        .status-gen-state {
+            flex: 1;
+            font-weight: 400;
+        }
+        .status-gen-time {
+            font-variant-numeric: tabular-nums;
+            font-size: 0.95em;
+            opacity: 0.75;
+            min-width: 32px;
+            text-align: right;
+        }
+        .status-gen-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+            opacity: 0.5;
+            flex-shrink: 0;
+        }
+        .status-gen-dot.done { opacity: 1; }
 
         /* Job description preview tooltip */
         .job-preview-tooltip {
@@ -254,10 +304,15 @@
          *   {"error": "message"} - Shows alert and resets buttons
          *
          * @param {string} btnId - The button element ID
-         * @param {string[]} allBtnIds - Array of all related button IDs to disable during loading
+         * @param {string[]} disableOnStartIds - Other button IDs to disable while this runs
          * @param {string|null} confirmMsg - Optional confirmation message before starting
          */
-        function setupSSEButton(btnId, allBtnIds, confirmMsg = null) {
+        // Reference-counted disable tracking: btnId -> Set of IDs that disabled it
+        const _btnDisabledBy = {};
+        // Reference-counted body loading cursor
+        let _loadingCount = 0;
+
+        function setupSSEButton(btnId, disableOnStartIds, confirmMsg = null) {
             document.getElementById(btnId)?.addEventListener('click', function() {
                 if (confirmMsg && !confirm(confirmMsg)) return;
 
@@ -270,59 +325,119 @@
                 // Show loading state with status text
                 btn.disabled = true;
                 btn.classList.add('loading');
+                _loadingCount++;
                 document.body.classList.add('loading');
                 btnText.style.display = 'none';
                 btnStatus.style.display = 'inline';
                 spinner.style.display = 'inline-block';
 
-                // Disable all other related buttons
-                allBtnIds.forEach(id => {
+                // Disable other buttons with reference counting
+                disableOnStartIds.forEach(id => {
+                    if (id === btnId) return;
+                    if (!_btnDisabledBy[id]) _btnDisabledBy[id] = new Set();
+                    _btnDisabledBy[id].add(btnId);
                     const otherBtn = document.getElementById(id);
-                    if (otherBtn && otherBtn !== btn) otherBtn.disabled = true;
+                    if (otherBtn) otherBtn.disabled = true;
                 });
 
                 // Track per-source statuses for parallel generation
                 let startTime = Date.now();
-                let sourceStatuses = {};  // {source: status} for parallel tracking
-                let currentStatus = 'Starting...';  // fallback for events without source
+                let sourceStatuses = {};
+                let sourceStartTimes = {};
+                let sourceDoneTimes = {};
+                let currentStatus = 'Starting...';
                 let timerInterval;
 
                 const sourceLabels = { resume: 'Resume', cover_letter: 'Cover letter' };
 
+                function shortStatus(s) {
+                    if (!s) return '…';
+                    if (s === 'Done') return 'Done';
+                    if (s.toLowerCase().includes('pdf')) return 'PDF';
+                    if (s.toLowerCase().includes('tailor')) return 'Tailoring';
+                    if (s.toLowerCase().includes('generat')) return 'Generating';
+                    if (s.toLowerCase().includes('initial')) return 'Init';
+                    return s.replace(/\.+$/, '');
+                }
+
                 function updateStatus() {
                     const elapsed = Math.floor((Date.now() - startTime) / 1000);
                     const sources = Object.keys(sourceStatuses);
-                    let display;
-                    if (sources.length > 1) {
-                        // Parallel: show both statuses
-                        display = sources.map(s => {
-                            const label = sourceLabels[s] || s;
-                            const icon = sourceStatuses[s] === 'Done' ? '\u2713' : '\u2026';
-                            return icon + ' ' + label + ': ' + sourceStatuses[s];
-                        }).join(' &nbsp;|&nbsp; ');
-                    } else if (sources.length === 1) {
-                        display = sourceStatuses[sources[0]];
-                    } else {
-                        display = currentStatus;
+
+                    function sourceElapsed(s) {
+                        const endTime = sourceDoneTimes[s] || Date.now();
+                        return Math.floor((endTime - (sourceStartTimes[s] || startTime)) / 1000);
                     }
-                    btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + display + ' (' + elapsed + 's)';
+
+                    if (sources.length > 1) {
+                        btn.classList.add('status-expanded');
+                        spinner.style.display = 'none';
+                        const rows = sources.map(s => {
+                            const label = sourceLabels[s] || s;
+                            const status = sourceStatuses[s];
+                            const isDone = status === 'Done';
+                            const dot = `<span class="status-gen-dot${isDone ? ' done' : ''}"></span>`;
+                            const check = isDone ? ' ✓' : '';
+                            return `<div class="status-gen-row">${dot}<span class="status-gen-label">${label}</span><span class="status-gen-state">${shortStatus(status)}${check}</span><span class="status-gen-time">${sourceElapsed(s)}s</span></div>`;
+                        }).join('');
+                        btnStatus.innerHTML = rows;
+                    } else if (sources.length === 1) {
+                        const s = sources[0];
+                        const label = sourceLabels[s] || s;
+                        const status = sourceStatuses[s];
+                        const isDone = status === 'Done';
+                        btn.classList.add('status-expanded');
+                        spinner.style.display = 'none';
+                        const dot = `<span class="status-gen-dot${isDone ? ' done' : ''}"></span>`;
+                        const check = isDone ? ' ✓' : '';
+                        btnStatus.innerHTML = `<div class="status-gen-row">${dot}<span class="status-gen-label">${label}</span><span class="status-gen-state">${shortStatus(status)}${check}</span><span class="status-gen-time">${sourceElapsed(s)}s</span></div>`;
+                    } else {
+                        btnStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> ' + currentStatus + ' (' + elapsed + 's)';
+                    }
                 }
 
                 function resetButtons() {
                     btn.disabled = false;
-                    btn.classList.remove('loading');
-                    document.body.classList.remove('loading');
+                    btn.classList.remove('loading', 'status-expanded');
+                    _loadingCount = Math.max(0, _loadingCount - 1);
+                    if (_loadingCount === 0) document.body.classList.remove('loading');
                     btnText.style.display = 'inline';
                     btnStatus.style.display = 'none';
                     spinner.style.display = 'none';
-                    allBtnIds.forEach(id => {
-                        const otherBtn = document.getElementById(id);
-                        if (otherBtn) otherBtn.disabled = false;
+                    disableOnStartIds.forEach(id => {
+                        if (id === btnId) return;
+                        if (_btnDisabledBy[id]) {
+                            _btnDisabledBy[id].delete(btnId);
+                            if (_btnDisabledBy[id].size === 0) {
+                                const otherBtn = document.getElementById(id);
+                                if (otherBtn) otherBtn.disabled = false;
+                            }
+                        }
                     });
                 }
 
                 updateStatus();
                 timerInterval = setInterval(updateStatus, 1000);
+
+                function playCompletionSound() {
+                    try {
+                        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                        [[880, 0], [1108.73, 0.18]].forEach(([freq, delay]) => {
+                            const osc = ctx.createOscillator();
+                            const gain = ctx.createGain();
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.type = 'sine';
+                            osc.frequency.value = freq;
+                            const t = ctx.currentTime + delay;
+                            gain.gain.setValueAtTime(0, t);
+                            gain.gain.linearRampToValueAtTime(0.35, t + 0.01);
+                            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+                            osc.start(t);
+                            osc.stop(t + 0.6);
+                        });
+                    } catch(e) {}
+                }
 
                 // Connect to SSE endpoint
                 const eventSource = new EventSource(url);
@@ -340,7 +455,13 @@
 
                     if (data.status) {
                         if (data.source) {
+                            if (!(data.source in sourceStartTimes)) {
+                                sourceStartTimes[data.source] = Date.now();
+                            }
                             sourceStatuses[data.source] = data.status;
+                            if (data.status === 'Done' && !(data.source in sourceDoneTimes)) {
+                                sourceDoneTimes[data.source] = Date.now();
+                            }
                         } else {
                             currentStatus = data.status;
                         }
@@ -350,7 +471,8 @@
                     if (data.redirect) {
                         clearInterval(timerInterval);
                         eventSource.close();
-                        window.location.href = data.redirect;
+                        playCompletionSound();
+                        setTimeout(() => { window.location.href = data.redirect; }, 400);
                     }
                 };
 

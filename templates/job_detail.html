@@ -322,10 +322,9 @@
 // Only show override warning if document already exists
 const hasResume = {{ 'true' if job.application and job.application.resume_md else 'false' }};
 const hasCoverLetter = {{ 'true' if job.application and job.application.cover_letter_md else 'false' }};
-const tailorBtnIds = ['tailorResumeBtn', 'tailorCoverLetterBtn', 'tailorBothBtn'];
-
-setupSSEButton('tailorResumeBtn', tailorBtnIds, hasResume ? 'This will replace the existing resume. Continue?' : null);
-setupSSEButton('tailorCoverLetterBtn', tailorBtnIds, hasCoverLetter ? 'This will replace the existing cover letter. Continue?' : null);
-setupSSEButton('tailorBothBtn', tailorBtnIds, (hasResume || hasCoverLetter) ? 'This will replace existing documents. Continue?' : null);
+// Resume and Cover Letter can run in parallel; Both blocks both individual buttons
+setupSSEButton('tailorResumeBtn', ['tailorBothBtn'], hasResume ? 'This will replace the existing resume. Continue?' : null);
+setupSSEButton('tailorCoverLetterBtn', ['tailorBothBtn'], hasCoverLetter ? 'This will replace the existing cover letter. Continue?' : null);
+setupSSEButton('tailorBothBtn', ['tailorResumeBtn', 'tailorCoverLetterBtn'], (hasResume || hasCoverLetter) ? 'This will replace existing documents. Continue?' : null);
 </script>
 {% endblock %}

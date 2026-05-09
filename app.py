@@ -1080,6 +1080,10 @@ def tailor_job_stream(id):
                 application.last_name = applicant_info.get('last_name', '')
                 application.email = applicant_info.get('email', '')
                 application.phone = applicant_info.get('phone', '')
+                application.resume_ai_time = resume_result.get('ai_time')
+                application.resume_pdf_time = resume_result.get('pdf_time')
+                application.cover_letter_ai_time = cl_result.get('ai_time')
+                application.cover_letter_pdf_time = cl_result.get('pdf_time')
 
                 job.status = 'ready'
                 db.session.commit()
@@ -1117,6 +1121,7 @@ def generate_resume_threaded(job_id, master_resume_content, desc_text, ai_config
     try:
         # Create app context for database access
         with app.app_context():
+            import time as _time
             event_queue.put({'status': 'Tailoring...', 'source': 'resume'})
 
             # Get custom prompts
@@ -1128,10 +1133,12 @@ def generate_resume_threaded(job_id, master_resume_content, desc_text, ai_config
                                 resume_prompt, cover_letter_prompt)
 
             # Generate tailored resume
+            _t0 = _time.time()
             if ai_config.provider == 'claude-cli':
                 tailored_resume = ai.generate_tailored_resume(master_resume_content, desc_text, app_dir)
             else:
                 tailored_resume = ai.generate_tailored_resume(master_resume_content, desc_text)
+            resume_ai_time = _time.time() - _t0
 
             event_queue.put({'status': 'Generating PDF...', 'source': 'resume'})
 
@@ -1139,6 +1146,7 @@ def generate_resume_threaded(job_id, master_resume_content, desc_text, ai_config
             from document_gen import get_application_folder_name
             from config import Config
 
+            _t0 = _time.time()
             paths = save_resume_document(
                 job_id, tailored_resume, Config.APPLICATIONS_DIR,
                 company=applicant_info.get('company'),
@@ -1146,12 +1154,15 @@ def generate_resume_threaded(job_id, master_resume_content, desc_text, ai_config
                 last_name=applicant_info.get('last_name'),
                 script_dir=jass_dir
             )
+            resume_pdf_time = _time.time() - _t0
 
             # Put successful result in queue
             result_queue.put({
                 'success': True,
                 'paths': paths,
-                'tailored_resume': tailored_resume
+                'tailored_resume': tailored_resume,
+                'ai_time': resume_ai_time,
+                'pdf_time': resume_pdf_time,
             })
 
             event_queue.put({'status': 'Done', 'source': 'resume'})
@@ -1191,6 +1202,7 @@ def generate_cover_letter_threaded(job_id, resume_content, desc_text, company, t
 
     try:
         with app.app_context():
+            import time as _time
             event_queue.put({'status': 'Generating...', 'source': 'cover_letter'})
 
             # Get custom prompts
@@ -1202,6 +1214,7 @@ def generate_cover_letter_threaded(job_id, resume_content, desc_text, company, t
                                 resume_prompt, cover_letter_prompt)
 
             # Generate cover letter
+            _t0 = _time.time()
             if ai_config.provider == 'claude-cli':
                 cover_letter = ai.generate_cover_letter(
                     resume_content, desc_text, company, title, app_dir, hiring_manager
@@ -1210,12 +1223,14 @@ def generate_cover_letter_threaded(job_id, resume_content, desc_text, company, t
                 cover_letter = ai.generate_cover_letter(
                     resume_content, desc_text, company, title, hiring_manager
                 )
+            cl_ai_time = _time.time() - _t0
 
             event_queue.put({'status': 'Generating PDF...', 'source': 'cover_letter'})
 
             # Save cover letter document (MD and PDF)
             from config import Config
 
+            _t0 = _time.time()
             paths = save_cover_letter_document(
                 job_id, cover_letter, Config.APPLICATIONS_DIR,
                 company=company,
@@ -1223,11 +1238,14 @@ def generate_cover_letter_threaded(job_id, resume_content, desc_text, company, t
                 last_name=applicant_info.get('last_name'),
                 script_dir=jass_dir
             )
+            cl_pdf_time = _time.time() - _t0
 
             # Put successful result in queue
             result_queue.put({
                 'success': True,
-                'paths': paths
+                'paths': paths,
+                'ai_time': cl_ai_time,
+                'pdf_time': cl_pdf_time,
             })
 
             event_queue.put({'status': 'Done', 'source': 'cover_letter'})
@@ -1354,6 +1372,8 @@ def tailor_resume_stream(id):
                     application.last_name = applicant_info.get('last_name', '')
                     application.email = applicant_info.get('email', '')
                     application.phone = applicant_info.get('phone', '')
+                    application.resume_ai_time = result.get('ai_time')
+                    application.resume_pdf_time = result.get('pdf_time')
 
                     job.status = 'ready'
                     db.session.commit()
@@ -1382,19 +1402,20 @@ def tailor_cover_letter_stream(id):
                 yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
                 return
 
-            # Check for existing resume
             application = job.application
-            if not application or not application.resume_md:
-                yield f"data: {json.dumps({'error': 'Generate a resume first'})}\n\n"
-                return
 
-            # Read the existing tailored resume
-            if not os.path.exists(application.resume_md):
-                yield f"data: {json.dumps({'error': 'Resume file not found. Please regenerate the resume.'})}\n\n"
-                return
+            # Use tailored resume if available, otherwise fall back to master resume
+            tailored_resume = None
+            if application and application.resume_md and os.path.exists(application.resume_md):
+                with open(application.resume_md, 'r', encoding='utf-8') as f:
+                    tailored_resume = f.read()
 
-            with open(application.resume_md, 'r', encoding='utf-8') as f:
-                tailored_resume = f.read()
+            if not tailored_resume:
+                master = MasterResume.query.filter_by(is_default=True).first() or MasterResume.query.first()
+                if not master:
+                    yield f"data: {json.dumps({'error': 'No resume available. Add a Master Resume first.'})}\n\n"
+                    return
+                tailored_resume = master.content
 
             log.info(f"Generating cover letter for job {id}: {job.title} at {job.company}")
 
@@ -1427,7 +1448,9 @@ def tailor_cover_letter_stream(id):
                 app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
 
                 # Generate cover letter
+                import time as _time
                 yield f"data: {json.dumps({'status': 'Generating cover letter...'})}\n\n"
+                _t0 = _time.time()
                 if ai_config.provider == 'claude-cli':
                     cover_letter = ai.generate_cover_letter(
                         tailored_resume, desc_text, job.company, job.title, app_dir,
@@ -1438,11 +1461,13 @@ def tailor_cover_letter_stream(id):
                         tailored_resume, desc_text, job.company, job.title,
                         job.hiring_manager
                     )
+                cl_ai_time = _time.time() - _t0
 
                 # Save cover letter document
                 yield f"data: {json.dumps({'status': 'Generating PDF...'})}\n\n"
                 jass_dir = os.path.dirname(os.path.abspath(__file__))
 
+                _t0 = _time.time()
                 paths = save_cover_letter_document(
                     job.id, cover_letter, Config.APPLICATIONS_DIR,
                     company=job.company,
@@ -1450,6 +1475,7 @@ def tailor_cover_letter_stream(id):
                     last_name=application.last_name,
                     script_dir=jass_dir
                 )
+                cl_pdf_time = _time.time() - _t0
 
                 # Update application
                 application.cover_letter_md = paths.get('cover_letter_md')
@@ -1457,6 +1483,8 @@ def tailor_cover_letter_stream(id):
                 application.ai_provider = ai_config.provider
                 application.ai_model = ai_config.model_name
                 application.tailored_at = datetime.utcnow()
+                application.cover_letter_ai_time = cl_ai_time
+                application.cover_letter_pdf_time = cl_pdf_time
 
                 db.session.commit()
 
@@ -1466,6 +1494,87 @@ def tailor_cover_letter_stream(id):
 
             except Exception as e:
                 log.error(f"Error generating cover letter: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
+@app.route('/jobs/<int:id>/generate-speech-stream')
+def generate_speech_stream(id):
+    """Generate motivation speech with SSE progress updates."""
+    from ai_service import get_ai_provider
+
+    def generate():
+        with app.app_context():
+            job = db.session.get(Job, id)
+            if not job:
+                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                return
+
+            application = job.application
+            if not application:
+                yield f"data: {json.dumps({'error': 'No application found. Generate a resume first.'})}\n\n"
+                return
+
+            # Get resume content for context
+            resume_content = ''
+            if application.resume_md and os.path.exists(application.resume_md):
+                with open(application.resume_md, 'r', encoding='utf-8') as f:
+                    resume_content = f.read()
+
+            if not resume_content:
+                # Fallback to master resume
+                master_resume = MasterResume.query.filter_by(is_default=True).first()
+                if master_resume:
+                    resume_content = master_resume.content
+
+            ai_config = AIConfig.query.filter_by(is_active=True).first()
+            if not ai_config:
+                yield f"data: {json.dumps({'error': 'AI not configured'})}\n\n"
+                return
+
+            if ai_config.provider not in ('claude-cli', 'ollama') and not ai_config.api_key:
+                yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+                return
+
+            try:
+                yield f"data: {json.dumps({'status': 'Generating speech...'})}\n\n"
+
+                # Get custom prompts
+                resume_prompt = AppSettings.get('resume_prompt')
+                cover_letter_prompt = AppSettings.get('cover_letter_prompt')
+                motivation_speech_prompt = AppSettings.get('motivation_speech_prompt')
+
+                ai = get_ai_provider(ai_config.provider, ai_config.api_key, ai_config.model_name,
+                                     resume_prompt, cover_letter_prompt, motivation_speech_prompt)
+
+                # Get plain text description
+                from bs4 import BeautifulSoup
+                desc_text = BeautifulSoup(job.description or '', 'html.parser').get_text()
+
+                # Generate speech
+                if ai_config.provider == 'claude-cli':
+                    from document_gen import get_application_folder_name
+                    folder_name = get_application_folder_name(job.company, job.id)
+                    app_dir = os.path.join(Config.APPLICATIONS_DIR, folder_name)
+                    speech = ai.generate_motivation_speech(
+                        resume_content, desc_text, job.company, job.title, app_dir
+                    )
+                else:
+                    speech = ai.generate_motivation_speech(
+                        resume_content, desc_text, job.company, job.title
+                    )
+
+                # Save to database
+                application.motivation_speech = speech
+                db.session.commit()
+
+                log.info(f"Motivation speech saved for application {application.id}")
+                redirect_url = f"/applications/{application.id}"
+                yield f"data: {json.dumps({'status': 'Complete!', 'redirect': redirect_url})}\n\n"
+
+            except Exception as e:
+                log.error(f"Error generating motivation speech: {e}", exc_info=True)
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return Response(generate(), mimetype='text/event-stream')
@@ -1507,6 +1616,18 @@ def application_detail(id):
         with open(application.cover_letter_md, 'r', encoding='utf-8') as f:
             cover_letter_content = f.read()
 
+    # Motivation speech
+    speech_content = application.motivation_speech or ''
+    speech_html = markdown.markdown(speech_content, extensions=['nl2br']) if speech_content else ''
+
+    # Parse job skills (stored as JSON string)
+    job_skills = []
+    if application.job.skills:
+        try:
+            job_skills = json.loads(application.job.skills)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     # Strip HTML for clean preview, convert to HTML
     resume_preview = strip_html_for_preview(resume_content)
     cover_letter_preview = strip_html_for_preview(cover_letter_content)
@@ -1519,7 +1640,10 @@ def application_detail(id):
                            resume_content=resume_content,
                            cover_letter_content=cover_letter_content,
                            resume_html=resume_html,
-                           cover_letter_html=cover_letter_html)
+                           cover_letter_html=cover_letter_html,
+                           speech_content=speech_content,
+                           speech_html=speech_html,
+                           job_skills=job_skills)
 
 
 @app.route('/applications/<int:id>/chat', methods=['POST'])
@@ -1792,6 +1916,7 @@ def settings():
     # Get custom prompts or use defaults
     resume_prompt = AppSettings.get('resume_prompt') or Config.DEFAULT_RESUME_PROMPT
     cover_letter_prompt = AppSettings.get('cover_letter_prompt') or Config.DEFAULT_COVER_LETTER_PROMPT
+    motivation_speech_prompt = AppSettings.get('motivation_speech_prompt') or Config.DEFAULT_MOTIVATION_SPEECH_PROMPT
 
     return render_template('settings.html',
                            configs=configs,
@@ -1800,8 +1925,10 @@ def settings():
                            default_boards=Config.DEFAULT_BOARDS,
                            resume_prompt=resume_prompt,
                            cover_letter_prompt=cover_letter_prompt,
+                           motivation_speech_prompt=motivation_speech_prompt,
                            default_resume_prompt=Config.DEFAULT_RESUME_PROMPT,
-                           default_cover_letter_prompt=Config.DEFAULT_COVER_LETTER_PROMPT)
+                           default_cover_letter_prompt=Config.DEFAULT_COVER_LETTER_PROMPT,
+                           default_motivation_speech_prompt=Config.DEFAULT_MOTIVATION_SPEECH_PROMPT)
 
 
 @app.route('/settings/save', methods=['POST'])
@@ -2011,14 +2138,17 @@ def save_prompts():
     """Save custom AI prompts."""
     resume_prompt = request.form.get('resume_prompt', '').strip()
     cover_letter_prompt = request.form.get('cover_letter_prompt', '').strip()
+    motivation_speech_prompt = request.form.get('motivation_speech_prompt', '').strip()
 
     if not resume_prompt or not cover_letter_prompt:
-        flash('Both prompts are required', 'danger')
+        flash('Resume and cover letter prompts are required', 'danger')
         return redirect(url_for('settings'))
 
     # Save to database
     AppSettings.set('resume_prompt', resume_prompt)
     AppSettings.set('cover_letter_prompt', cover_letter_prompt)
+    if motivation_speech_prompt:
+        AppSettings.set('motivation_speech_prompt', motivation_speech_prompt)
 
     flash('AI prompts saved', 'success')
     return redirect(url_for('settings'))
@@ -2028,7 +2158,7 @@ def save_prompts():
 def restore_default_prompts():
     """Restore default AI prompts."""
     # Delete custom prompt settings
-    for key in ['resume_prompt', 'cover_letter_prompt']:
+    for key in ['resume_prompt', 'cover_letter_prompt', 'motivation_speech_prompt']:
         setting = AppSettings.query.filter_by(key=key).first()
         if setting:
             db.session.delete(setting)

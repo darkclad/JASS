@@ -551,6 +551,12 @@ def is_linkedin_format(text: str) -> bool:
         'Show more options',
         'Matches your job preferences',
         'Meet the hiring team',
+        'Company logo for',
+        'Promoted by hirer',
+        'clicked apply',
+        'Reposted',
+        'off LinkedIn',
+        'Job match is high',
     ]
     count = sum(1 for ind in indicators if ind in text)
     return count >= 2
@@ -604,6 +610,7 @@ def parse_linkedin_header(text: str) -> Dict:
         r'^help me', r'^create cover', r'^beta$', r'^is this information',
         r'^people you can', r'^company alumni', r'^show all$',
         r'hiring team', r'^job poster$', r'^\d+\w*$', r'^researcher$',
+        r'^company logo',
     ]
 
     def is_skip_line(line):
@@ -971,7 +978,8 @@ def parse_company_name(text: str) -> Optional[str]:
             company = re.sub(r'\s+$', '', company)
             # Skip if it looks like a job title or generic phrase
             skip_words = ['the team', 'our team', 'a team', 'this role', 'the role',
-                          'engineer', 'developer', 'manager', 'we are', 'you will']
+                          'engineer', 'developer', 'manager', 'we are', 'you will',
+                          'logo for', 'logo at']
             if any(sw in company.lower() for sw in skip_words):
                 continue
             if len(company) > 2 and len(company) < 60:

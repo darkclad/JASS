@@ -71,10 +71,19 @@ class Application(db.Model):
     cover_letter_md = db.Column(db.String(500))
     cover_letter_pdf = db.Column(db.String(500))
 
+    # Motivation speech (stored as text, no file)
+    motivation_speech = db.Column(db.Text)
+
     # AI generation metadata
     ai_provider = db.Column(db.String(50))  # claude, openai, etc.
     ai_model = db.Column(db.String(100))
     tailored_at = db.Column(db.DateTime)
+
+    # Generation timing (seconds)
+    resume_ai_time = db.Column(db.Float)
+    resume_pdf_time = db.Column(db.Float)
+    cover_letter_ai_time = db.Column(db.Float)
+    cover_letter_pdf_time = db.Column(db.Float)
 
     # Application tracking
     status = db.Column(db.String(50), default='draft')

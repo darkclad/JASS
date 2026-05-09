@@ -188,13 +188,13 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-chat-text"></i> AI Prompts</span>
-                {% if resume_prompt != default_resume_prompt or cover_letter_prompt != default_cover_letter_prompt %}
+                {% if resume_prompt != default_resume_prompt or cover_letter_prompt != default_cover_letter_prompt or motivation_speech_prompt != default_motivation_speech_prompt %}
                 <span class="badge bg-info">Custom</span>
                 {% endif %}
             </div>
             <div class="card-body">
                 <p class="small text-muted">
-                    Customize the prompts used for AI-generated resumes and cover letters.
+                    Customize the prompts used for AI-generated resumes, cover letters, and motivation speeches.
                 </p>
                 <form action="{{ url_for('save_prompts') }}" method="POST">
                     <div class="row">
@@ -211,11 +211,19 @@
                             <div class="form-text">Instructions for generating cover letters.</div>
                         </div>
                     </div>
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label"><strong>Motivation Speech Prompt</strong></label>
+                            <textarea name="motivation_speech_prompt" class="form-control font-monospace" rows="8"
+                                      style="font-size: 0.8rem;">{{ motivation_speech_prompt }}</textarea>
+                            <div class="form-text">Instructions for generating "Why I want to join" interview speech. Should produce natural, human-like text.</div>
+                        </div>
+                    </div>
                     <div class="d-flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm">
                             <i class="bi bi-save"></i> Save Prompts
                         </button>
-                        {% if resume_prompt != default_resume_prompt or cover_letter_prompt != default_cover_letter_prompt %}
+                        {% if resume_prompt != default_resume_prompt or cover_letter_prompt != default_cover_letter_prompt or motivation_speech_prompt != default_motivation_speech_prompt %}
                         <button type="button" class="btn btn-outline-secondary btn-sm"
                                 onclick="if(confirm('Restore default prompts?')) document.getElementById('restorePromptsForm').submit()">
                             <i class="bi bi-arrow-counterclockwise"></i> Restore Defaults

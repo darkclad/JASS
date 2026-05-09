@@ -61,3 +61,17 @@ INSTRUCTIONS:
 8. DO NOT include any placeholder text like [Current Date], [Your Name], [Company Address], etc.
 9. DO NOT include a header with addresses - start directly with the greeting (e.g., "Dear Hiring Manager,")
 10. Extract the applicant's name from the resume and use it in the signature"""
+
+    DEFAULT_MOTIVATION_SPEECH_PROMPT = """You are helping a job applicant prepare for an interview. Write a short, genuine speech explaining why they want to join this company and why this specific role interests them.
+
+INSTRUCTIONS:
+1. Research what the company does based on the job description
+2. Write in first person as if the applicant is speaking directly to the interviewer
+3. Use simple, natural, everyday language — speak like a real person talking to another person
+4. DO NOT use buzzwords, corporate jargon, or fancy vocabulary — no "synergy", "leverage", "passionate about innovation", "thrilled", "excited to contribute" etc.
+5. Connect the applicant's actual experience from their resume to what the role needs
+6. Show genuine curiosity about what the company does and the problems they solve
+7. Keep it conversational and authentic — something you would actually say out loud in an interview
+8. It MUST NOT sound like it was written by AI — no generic phrases, no perfect structure, keep it human and slightly imperfect
+9. 150-300 words maximum, 2-3 short paragraphs
+10. Do not start with "I am writing" or any letter-style opening — this is spoken text"""

@@ -97,6 +97,13 @@
                 </button>
             </li>
             {% endif %}
+            {% if application.motivation_speech %}
+            <li class="nav-item">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#speech-tab" type="button">
+                    <i class="bi bi-mic"></i> Speech
+                </button>
+            </li>
+            {% endif %}
         </ul>
 
         <div class="tab-content">
@@ -144,6 +151,19 @@
                 </div>
             </div>
             {% endif %}
+
+            {% if application.motivation_speech %}
+            <div class="tab-pane fade" id="speech-tab">
+                <div class="card">
+                    <div class="card-header">
+                        <span><i class="bi bi-mic"></i> Why I Want to Join</span>
+                    </div>
+                    <div class="card-body doc-preview">
+                        {{ speech_html|safe }}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
         </div>
         {% else %}
         <!-- Editable view for non-applied applications -->
@@ -168,6 +188,13 @@
                 <li class="nav-item">
                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#preview-tab" type="button">
                         <i class="bi bi-eye"></i> Preview
+                    </button>
+                </li>
+                {% endif %}
+                {% if application.motivation_speech %}
+                <li class="nav-item">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#speech-tab" type="button">
+                        <i class="bi bi-mic"></i> Speech
                     </button>
                 </li>
                 {% endif %}
@@ -239,6 +266,20 @@
                     </div>
                 </div>
                 {% endif %}
+
+                {% if application.motivation_speech %}
+                <!-- Motivation Speech -->
+                <div class="tab-pane fade" id="speech-tab">
+                    <div class="card">
+                        <div class="card-header">
+                            <span><i class="bi bi-mic"></i> Why I Want to Join</span>
+                        </div>
+                        <div class="card-body doc-preview">
+                            {{ speech_html|safe }}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
             </div>
         </form>
         {% endif %}
@@ -262,15 +303,78 @@
             </div>
         </div>
 
-        <!-- Details -->
+        <!-- Job Info -->
         <div class="card mb-4">
             <div class="card-header">
-                <i class="bi bi-info-circle"></i> Details
+                <i class="bi bi-briefcase"></i> Job Info
             </div>
             <div class="card-body small">
+                {% set job = application.job %}
+                {% if job.company %}
+                <p class="mb-1"><strong>Company:</strong> {{ job.company }}</p>
+                {% endif %}
+                {% if job.location %}
+                <p class="mb-1"><strong>Location:</strong>
+                    {{ job.location }}
+                    {% if job.is_remote %}<span class="badge bg-success ms-1">Remote</span>{% endif %}
+                </p>
+                {% endif %}
+                {% if job.department %}
+                <p class="mb-1"><strong>Department:</strong> {{ job.department }}</p>
+                {% endif %}
+                {% if job.employment_type %}
+                <p class="mb-1"><strong>Type:</strong> {{ job.employment_type }}</p>
+                {% endif %}
+                {% if job.experience_years %}
+                <p class="mb-1"><strong>Experience:</strong> {{ job.experience_years }} years</p>
+                {% endif %}
+                {% if job.hiring_manager %}
+                <p class="mb-1"><strong>Hiring Manager:</strong> {{ job.hiring_manager }}</p>
+                {% endif %}
+                {% if job.salary_min or job.salary_max or job.salary_text %}
+                <p class="mb-1"><strong>Salary:</strong>
+                    {% if job.salary_text %}
+                        {{ job.salary_text }}
+                    {% elif job.salary_min and job.salary_max %}
+                        ${{ '{:,}'.format(job.salary_min) }} – ${{ '{:,}'.format(job.salary_max) }}
+                    {% elif job.salary_min %}
+                        from ${{ '{:,}'.format(job.salary_min) }}
+                    {% elif job.salary_max %}
+                        up to ${{ '{:,}'.format(job.salary_max) }}
+                    {% endif %}
+                </p>
+                {% endif %}
+                {% if job_skills %}
+                <p class="mb-1"><strong>Skills:</strong>
+                    {% for skill in job_skills[:8] %}
+                    <span class="badge bg-secondary me-1">{{ skill }}</span>
+                    {% endfor %}
+                    {% if job_skills | length > 8 %}
+                    <span class="text-muted">+{{ job_skills | length - 8 }} more</span>
+                    {% endif %}
+                </p>
+                {% endif %}
+                {% if job.posted_at %}
+                <p class="mb-1"><strong>Posted:</strong> {{ job.posted_at.strftime('%Y-%m-%d') }}</p>
+                {% endif %}
+                {% if job.source %}
+                <p class="mb-1"><strong>Source:</strong> {{ job.source }}</p>
+                {% endif %}
+                <hr class="my-2">
                 <p class="mb-1"><strong>AI Provider:</strong> {{ application.ai_provider or '-' }}</p>
                 <p class="mb-1"><strong>Model:</strong> {{ application.ai_model or '-' }}</p>
                 <p class="mb-1"><strong>Generated:</strong> {{ application.tailored_at.strftime('%Y-%m-%d %H:%M') if application.tailored_at else '-' }}</p>
+                {% macro fmt_time(t) %}{% if t is not none %}{% if t >= 60 %}{{ (t // 60)|int }}m {{ (t % 60)|int }}s{% else %}{{ t|int }}s{% endif %}{% else %}-{% endif %}{% endmacro %}
+                {% if application.resume_ai_time is not none or application.cover_letter_ai_time is not none %}
+                <hr class="my-2">
+                <p class="mb-1 text-muted small fw-semibold">Generation times</p>
+                {% if application.resume_ai_time is not none %}
+                <p class="mb-1 small"><strong>Resume:</strong> {{ fmt_time(application.resume_ai_time) }} AI{% if application.resume_pdf_time is not none %}<span class="text-muted"> · {{ fmt_time(application.resume_pdf_time) }} PDF</span>{% endif %}</p>
+                {% endif %}
+                {% if application.cover_letter_ai_time is not none %}
+                <p class="mb-0 small"><strong>Cover letter:</strong> {{ fmt_time(application.cover_letter_ai_time) }} AI{% if application.cover_letter_pdf_time is not none %}<span class="text-muted"> · {{ fmt_time(application.cover_letter_pdf_time) }} PDF</span>{% endif %}</p>
+                {% endif %}
+                {% endif %}
             </div>
         </div>
 
@@ -328,9 +432,17 @@
                 </button>
                 {% endif %}
                 <!-- Combined regenerate button -->
-                <button type="button" class="btn btn-primary w-100 mb-3" id="regenBothBtn"
+                <button type="button" class="btn btn-primary w-100 mb-2" id="regenBothBtn"
                         data-tailor-url="{{ url_for('tailor_job_stream', id=application.job.id) }}">
                     <span class="btn-text"><i class="bi bi-arrow-repeat"></i> Regenerate Both</span>
+                    <span class="btn-status" style="display: none;"></span>
+                    <span class="spinner-border" role="status"></span>
+                </button>
+                <hr class="my-2">
+                <!-- Motivation Speech -->
+                <button type="button" class="btn btn-outline-primary w-100 mb-2" id="genSpeechBtn"
+                        data-tailor-url="{{ url_for('generate_speech_stream', id=application.job.id) }}">
+                    <span class="btn-text"><i class="bi bi-mic"></i> {{ 'Regenerate' if application.motivation_speech else 'Generate' }} Speech</span>
                     <span class="btn-status" style="display: none;"></span>
                     <span class="spinner-border" role="status"></span>
                 </button>
@@ -398,11 +510,12 @@ document.getElementById('saveForm')?.addEventListener('submit', function() {
 });
 
 // Setup regeneration buttons using shared SSE handler
-const regenBtnIds = ['regenBothBtn', 'regenResumeBtn', 'regenCoverLetterBtn', 'genCoverLetterBtn'];
-setupSSEButton('regenBothBtn', regenBtnIds, 'This will regenerate both resume and cover letter. Continue?');
-setupSSEButton('regenResumeBtn', regenBtnIds, 'This will regenerate the resume. Continue?');
-setupSSEButton('regenCoverLetterBtn', regenBtnIds, 'This will regenerate the cover letter. Continue?');
-setupSSEButton('genCoverLetterBtn', regenBtnIds);  // No confirmation for first-time generation
+// Resume and Cover Letter can run in parallel; Both blocks both; Speech is independent
+setupSSEButton('regenBothBtn', ['regenResumeBtn', 'regenCoverLetterBtn', 'genCoverLetterBtn'], 'This will regenerate both resume and cover letter. Continue?');
+setupSSEButton('regenResumeBtn', ['regenBothBtn'], 'This will regenerate the resume. Continue?');
+setupSSEButton('regenCoverLetterBtn', ['regenBothBtn'], 'This will regenerate the cover letter. Continue?');
+setupSSEButton('genCoverLetterBtn', ['regenBothBtn']);  // No confirmation for first-time generation
+setupSSEButton('genSpeechBtn', []);
 
 // AI Chat functionality
 const chatMessages = document.getElementById('chatMessages');

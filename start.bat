@@ -1,23 +1,48 @@
 @echo off
 cd /d "%~dp0"
 
-REM Check if venv exists
-if not exist "venv\Scripts\activate.bat" (
-    echo Creating virtual environment...
-    python -m venv venv
+REM Check if venv exists and is valid (not a stale venv from old path)
+if exist "venv\Scripts\python.exe" (
+    venv\Scripts\python.exe -c "import sys" >nul 2>&1
     if errorlevel 1 (
-        echo Failed to create virtual environment
-        pause
-        exit /b 1
+        echo Stale virtual environment detected, recreating...
+        rmdir /s /q venv
     )
 )
 
-REM Activate venv
-call venv\Scripts\activate
+REM Create venv if missing - try py launcher first, then python
+if not exist "venv\Scripts\python.exe" (
+    echo Creating virtual environment...
+    py -m venv venv >nul 2>&1
+    if errorlevel 1 (
+        python -m venv venv
+        if errorlevel 1 (
+            echo Failed to create virtual environment
+            pause
+            exit /b 1
+        )
+    )
+    echo Installing pip...
+    venv\Scripts\python.exe -m ensurepip --upgrade >nul 2>&1
+)
+
+REM Verify venv python exists
+if not exist "venv\Scripts\python.exe" (
+    echo ERROR: venv\Scripts\python.exe not found after creation
+    echo Python may not be installed or accessible. Install from https://python.org
+    pause
+    exit /b 1
+)
 
 REM Install/update Python dependencies
 echo Checking Python dependencies...
-pip install -r requirements.txt --quiet
+venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
+if errorlevel 1 (
+    echo Failed to install dependencies - retrying with verbose output...
+    venv\Scripts\python.exe -m pip install -r requirements.txt
+    pause
+    exit /b 1
+)
 
 REM Check if Node.js is installed
 where node >nul 2>&1
@@ -52,6 +77,6 @@ if errorlevel 1 (
 
 REM Run the app
 echo Starting JASS...
-python app.py %*
+venv\Scripts\python.exe app.py %*
 
 pause
