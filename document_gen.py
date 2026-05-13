@@ -38,12 +38,12 @@ def extract_applicant_info(resume_content: str) -> dict:
     Extract applicant info from resume markdown content.
 
     Expects format like:
-    # Demian Vladi
-    demian.vladi@gmail.com | (858) 888-8888 | San Diego, CA
+    # John Doe
+    john.doe@email.com | (555) 123-4567 | San Diego, CA
 
     Or HTML-styled:
     <div style="text-align: center;">
-    # Demian Vladi
+    # John Doe
 
     Returns dict with first_name, last_name, email, phone
     """
@@ -86,7 +86,7 @@ def extract_applicant_info(resume_content: str) -> dict:
             email_match = re.search(r'([\w\.-]+)@[\w\.-]+\.\w+', line)
             if email_match:
                 email_prefix = email_match.group(1)
-                # Try to extract name from email like demian.vladi or demian_vladi
+                # Try to extract name from email like john.doe or john_doe
                 parts = re.split(r'[._]', email_prefix)
                 if len(parts) >= 2:
                     info['first_name'] = parts[0].capitalize()
